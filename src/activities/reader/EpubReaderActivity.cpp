@@ -32,7 +32,7 @@ constexpr unsigned long formattingToggleMs = 500;
 constexpr unsigned long doubleClickMs = 400;
 
 // --- HIGHLIGHT MODE ---
-constexpr unsigned long highlightDoubleTapMs = 300;   // Double-tap Power window
+constexpr unsigned long highlightDoubleTapMs = 350;   // Double-tap Power window
 constexpr unsigned long highlightLongPressMs = 500;    // Long-press Back to cancel
 // --- HIGHLIGHT MODE ---
 
@@ -451,96 +451,119 @@ void EpubReaderActivity::loop() {
         highlightState.selectionEndLine = highlightState.cursorLineIndex;
         highlightState.selectionInitialized = true;
 
-        // Snap to sentence start; find sentence end, crossing to next page if needed
+        // Snap to sentence start (cross-page backward) and find sentence end
         highlightState.selectionStartCharOffset = 0;
         highlightState.selectionEndCharOffset = -1;
         highlightState.selectionStartPage = section ? section->currentPage : -1;
         highlightState.selectionEndPage = section ? section->currentPage : -1;
         if (section) {
+          const int curPageIdx = section->currentPage;
           auto tempPage = section->loadPageFromSectionFile();
           if (tempPage) {
             int lineCount = HighlightStore::countTextLines(*tempPage);
 
-            // Find the actual sentence start — may be on a previous line if cursor is mid-sentence
+            // === Find sentence start — may be on a previous page ===
+            int selStartPage = curPageIdx;
             int selStartLine = highlightState.cursorLineIndex;
             int selStartChar = 0;
+
+            // Helper: given a line's text, find the start of the sentence
+            // that ENDS this line (returns sentEnd pos, or -1 if none).
+            // Shared lambda not available in C++17 easily — use inline logic.
+
+            // Step 1: check cursor line for an internal sentence boundary
             {
               std::string curLineText = HighlightStore::getLineText(*tempPage, selStartLine);
               int fss = HighlightStore::findFirstSentenceStart(curLineText);
               if (fss > 0) {
-                // Sentence boundary found within this line — start there
                 selStartChar = fss;
+                // sentence boundary found on this line — done
               } else {
-                // Check whether the previous line ends a sentence (making pos 0 a valid start)
-                bool prevEndsSentence = (selStartLine == 0);
-                if (!prevEndsSentence) {
-                  std::string prevLine = HighlightStore::getLineText(*tempPage, selStartLine - 1);
-                  int lastNS = (int)prevLine.size() - 1;
-                  while (lastNS >= 0 && prevLine[lastNS] == ' ') lastNS--;
-                  if (lastNS >= 0) {
-                    char c = prevLine[lastNS];
-                    prevEndsSentence = (c == '.' || c == '!' || c == '?');
+                // Step 2: walk backward within current page
+                bool found = false;
+                for (int li = selStartLine - 1; li >= 0 && !found; li--) {
+                  std::string lineText = HighlightStore::getLineText(*tempPage, li);
+                  int sentEnd = HighlightStore::findLastSentenceEnd(lineText);
+                  if (sentEnd > 0) {
+                    int nextStart = sentEnd;
+                    while (nextStart < (int)lineText.size() && lineText[nextStart] == ' ') nextStart++;
+                    if (nextStart < (int)lineText.size()) {
+                      selStartLine = li;
+                      selStartChar = nextStart;
+                    } else {
+                      selStartLine = li + 1;
+                      selStartChar = 0;
+                    }
+                    found = true;
                   }
                 }
-                if (!prevEndsSentence) {
-                  // Cursor is mid-sentence — walk back to find where this sentence began
-                  bool foundSentStart = false;
-                  for (int li = selStartLine - 1; li >= 0 && !foundSentStart; li--) {
-                    std::string lineText = HighlightStore::getLineText(*tempPage, li);
-                    int sentEnd = HighlightStore::findLastSentenceEnd(lineText);
-                    if (sentEnd > 0) {
-                      int nextStart = sentEnd;
-                      while (nextStart < (int)lineText.size() && lineText[nextStart] == ' ') nextStart++;
-                      if (nextStart < (int)lineText.size()) {
-                        selStartLine = li;
-                        selStartChar = nextStart;
-                      } else {
-                        selStartLine = li + 1;
-                        selStartChar = 0;
+                // Step 3: if we hit line 0 without finding a boundary, check previous page
+                if (!found && curPageIdx > 0) {
+                  int savedPage = section->currentPage;
+                  section->currentPage = curPageIdx - 1;
+                  auto prevPage = section->loadPageFromSectionFile();
+                  section->currentPage = savedPage;
+                  if (prevPage) {
+                    int prevLineCount = HighlightStore::countTextLines(*prevPage);
+                    for (int li = prevLineCount - 1; li >= 0 && !found; li--) {
+                      std::string lineText = HighlightStore::getLineText(*prevPage, li);
+                      int sentEnd = HighlightStore::findLastSentenceEnd(lineText);
+                      if (sentEnd > 0) {
+                        int nextStart = sentEnd;
+                        while (nextStart < (int)lineText.size() && lineText[nextStart] == ' ') nextStart++;
+                        if (nextStart < (int)lineText.size()) {
+                          selStartPage = curPageIdx - 1;
+                          selStartLine = li;
+                          selStartChar = nextStart;
+                        } else if (li + 1 < prevLineCount) {
+                          selStartPage = curPageIdx - 1;
+                          selStartLine = li + 1;
+                          selStartChar = 0;
+                        } else {
+                          // sentence starts at line 0 of the current page
+                          selStartPage = curPageIdx;
+                          selStartLine = 0;
+                          selStartChar = 0;
+                        }
+                        found = true;
                       }
-                      foundSentStart = true;
                     }
                   }
-                  if (!foundSentStart) {
+                  if (!found) {
                     selStartLine = 0;
                     selStartChar = 0;
                   }
+                } else if (!found) {
+                  selStartLine = 0;
+                  selStartChar = 0;
                 }
               }
             }
+
+            highlightState.selectionStartPage = selStartPage;
             highlightState.selectionStartLine = selStartLine;
             highlightState.selectionStartCharOffset = selStartChar;
+            highlightState.selectionEndPage = selStartPage;
             highlightState.selectionEndLine = selStartLine;
 
-            // Search current page for sentence end (from the snapped start position)
+            // === Find sentence end — search from start position, possibly across pages ===
             bool foundEnd = false;
-            for (int li = selStartLine; li < lineCount && !foundEnd; li++) {
-              std::string lineText = HighlightStore::getLineText(*tempPage, li);
-              int searchFrom = (li == selStartLine) ? selStartChar : 0;
-              for (int ci = searchFrom; ci < (int)lineText.size(); ci++) {
-                char c = lineText[ci];
-                if (c == '.' || c == '!' || c == '?') {
-                  highlightState.selectionEndLine = li;
-                  highlightState.selectionEndCharOffset = ci + 1;
-                  foundEnd = true;
-                  break;
-                }
-              }
-            }
-            // If not found on current page, search the next page
-            if (!foundEnd && section->currentPage + 1 < section->pageCount) {
+
+            // If start is on the previous page, search there first
+            if (selStartPage < curPageIdx) {
               int savedPage = section->currentPage;
-              section->currentPage = savedPage + 1;
-              auto nextPage = section->loadPageFromSectionFile();
+              section->currentPage = selStartPage;
+              auto startPageObj = section->loadPageFromSectionFile();
               section->currentPage = savedPage;
-              if (nextPage) {
-                int nextLineCount = HighlightStore::countTextLines(*nextPage);
-                for (int li = 0; li < nextLineCount && !foundEnd; li++) {
-                  std::string lineText = HighlightStore::getLineText(*nextPage, li);
-                  for (int ci = 0; ci < (int)lineText.size(); ci++) {
+              if (startPageObj) {
+                int spLines = HighlightStore::countTextLines(*startPageObj);
+                for (int li = selStartLine; li < spLines && !foundEnd; li++) {
+                  std::string lineText = HighlightStore::getLineText(*startPageObj, li);
+                  int ci = (li == selStartLine) ? selStartChar : 0;
+                  for (; ci < (int)lineText.size(); ci++) {
                     char c = lineText[ci];
                     if (c == '.' || c == '!' || c == '?') {
-                      highlightState.selectionEndPage = savedPage + 1;
+                      highlightState.selectionEndPage = selStartPage;
                       highlightState.selectionEndLine = li;
                       highlightState.selectionEndCharOffset = ci + 1;
                       foundEnd = true;
@@ -550,11 +573,62 @@ void EpubReaderActivity::loop() {
                 }
               }
             }
+
+            // Search current page
             if (!foundEnd) {
-              highlightState.selectionEndLine = highlightState.selectionStartLine;
+              int startLi = (selStartPage == curPageIdx) ? selStartLine : 0;
+              int startCi = (selStartPage == curPageIdx) ? selStartChar : 0;
+              for (int li = startLi; li < lineCount && !foundEnd; li++) {
+                std::string lineText = HighlightStore::getLineText(*tempPage, li);
+                int ci = (li == startLi) ? startCi : 0;
+                for (; ci < (int)lineText.size(); ci++) {
+                  char c = lineText[ci];
+                  if (c == '.' || c == '!' || c == '?') {
+                    highlightState.selectionEndPage = curPageIdx;
+                    highlightState.selectionEndLine = li;
+                    highlightState.selectionEndCharOffset = ci + 1;
+                    foundEnd = true;
+                    break;
+                  }
+                }
+              }
+            }
+
+            // Search next page
+            if (!foundEnd && curPageIdx + 1 < section->pageCount) {
+              int savedPage = section->currentPage;
+              section->currentPage = curPageIdx + 1;
+              auto nextPage = section->loadPageFromSectionFile();
+              section->currentPage = savedPage;
+              if (nextPage) {
+                int nextLineCount = HighlightStore::countTextLines(*nextPage);
+                for (int li = 0; li < nextLineCount && !foundEnd; li++) {
+                  std::string lineText = HighlightStore::getLineText(*nextPage, li);
+                  for (int ci = 0; ci < (int)lineText.size(); ci++) {
+                    char c = lineText[ci];
+                    if (c == '.' || c == '!' || c == '?') {
+                      highlightState.selectionEndPage = curPageIdx + 1;
+                      highlightState.selectionEndLine = li;
+                      highlightState.selectionEndCharOffset = ci + 1;
+                      foundEnd = true;
+                      break;
+                    }
+                  }
+                }
+              }
+            }
+
+            if (!foundEnd) {
+              highlightState.selectionEndLine = selStartLine;
               highlightState.selectionEndCharOffset = -1;
             }
           }
+        }
+
+        // If the sentence starts on a previous page, turn back there so user can see it
+        if (section && highlightState.selectionStartPage >= 0 &&
+            highlightState.selectionStartPage != section->currentPage) {
+          section->currentPage = highlightState.selectionStartPage;
         }
 
         LOG_DBG("ERS", "Highlight mode: entered SELECT at line %d (startChar=%d, endChar=%d)",
@@ -693,7 +767,7 @@ void EpubReaderActivity::loop() {
         return;
       }
 
-      // BTN_DOWN extends selection by 3 sentences per press (cross-page if needed)
+      // BTN_DOWN extends selection by up to 3 sentences per press; stops at page boundary
       if (mappedInput.wasReleased(MappedInputManager::Button::Down)) {
         RenderLock lock(*this);
         if (section) {
@@ -749,6 +823,8 @@ void EpubReaderActivity::loop() {
               }
             }
             if (!found) break;
+            // Stop advancing if this step crossed a page boundary
+            if (highlightState.selectionEndPage != curEndPage) break;
           }
         }
         LOG_DBG("ERS", "Highlight select extended → page=%d line=%d char=%d",
