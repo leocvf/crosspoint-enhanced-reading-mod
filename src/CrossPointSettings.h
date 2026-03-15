@@ -122,6 +122,7 @@ class CrossPointSettings {
   uint8_t forceBoldText = 0;
   uint8_t swapPortraitControls = 0;
   uint8_t swapLandscapeControls = 0;
+  uint8_t highlightModeEnabled = 1;  // --- HIGHLIGHT MODE --- enable/disable highlight feature
 
   ~CrossPointSettings() = default;
 

@@ -33,4 +33,9 @@ class TextBlock final : public Block {
   BlockType getType() override { return TEXT_BLOCK; }
   bool serialize(FsFile& file) const;
   static std::unique_ptr<TextBlock> deserialize(FsFile& file);
+
+  // --- HIGHLIGHT MODE ---
+  const std::list<std::string>& getWords() const { return words; }
+  const std::list<uint16_t>& getWordXPositions() const { return wordXpos; }
+  // --- HIGHLIGHT MODE ---
 };

@@ -13,6 +13,7 @@
 
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
+#include "util/HighlightStore.h"  // --- HIGHLIGHT MODE ---
 #include "EpubReaderChapterSelectionActivity.h"
 #include "EpubReaderPercentSelectionActivity.h"
 #include "KOReaderCredentialStore.h"
@@ -29,6 +30,11 @@ constexpr unsigned long goHomeMs = 1000;
 constexpr unsigned long formattingToggleMs = 500;
 // New constant for double click speed
 constexpr unsigned long doubleClickMs = 400;
+
+// --- HIGHLIGHT MODE ---
+constexpr unsigned long highlightDoubleTapMs = 300;   // Double-tap Power window
+constexpr unsigned long highlightLongPressMs = 500;    // Long-press Back to cancel
+// --- HIGHLIGHT MODE ---
 
 // Global state for the Help Overlay and Night Mode
 static bool showHelpOverlay = false;
@@ -116,6 +122,63 @@ void drawHelpBox(const GfxRenderer& renderer, int x, int y, const char* text, Bo
   }
 }
 
+// --- HIGHLIGHT MODE ---
+// Returns the X pixel position (relative to page coordinate space, before adding orientedMarginLeft)
+// for a given character offset within a PageLine. Snaps to word boundaries.
+// For start-of-selection: returns the xpos of the word containing charOffset (bar starts here).
+static int16_t charOffsetToStartPixel(const PageLine* pl, int charOffset) {
+  const auto& words = pl->getBlock()->getWords();
+  const auto& xpositions = pl->getBlock()->getWordXPositions();
+  if (words.empty() || xpositions.empty()) return 0;
+
+  int pos = 0;
+  auto wordIt = words.begin();
+  auto xposIt = xpositions.begin();
+  int16_t lastXPos = *xposIt;
+
+  while (wordIt != words.end() && xposIt != xpositions.end()) {
+    lastXPos = *xposIt;
+    int wordEnd = pos + static_cast<int>(wordIt->size());
+    if (charOffset <= wordEnd) {
+      return *xposIt;
+    }
+    pos = wordEnd + 1;
+    ++wordIt;
+    ++xposIt;
+  }
+  return lastXPos;
+}
+
+// For end-of-selection: returns the xpos of the NEXT word after the one containing charOffset,
+// so the bar includes the full last word. Returns -1 if charOffset is in the last word (use full width).
+static int charOffsetToEndPixel(const PageLine* pl, int charOffset) {
+  const auto& words = pl->getBlock()->getWords();
+  const auto& xpositions = pl->getBlock()->getWordXPositions();
+  if (words.empty() || xpositions.empty()) return -1;
+
+  int pos = 0;
+  auto wordIt = words.begin();
+  auto xposIt = xpositions.begin();
+
+  while (wordIt != words.end() && xposIt != xpositions.end()) {
+    int wordEnd = pos + static_cast<int>(wordIt->size());
+    if (charOffset <= wordEnd) {
+      // Found the containing word — return the next word's start xpos
+      auto nextXposIt = xposIt;
+      ++nextXposIt;
+      if (nextXposIt != xpositions.end()) {
+        return static_cast<int>(*nextXposIt);
+      }
+      return -1;  // this is the last word, keep full width
+    }
+    pos = wordEnd + 1;
+    ++wordIt;
+    ++xposIt;
+  }
+  return -1;  // past all words, keep full width
+}
+// --- HIGHLIGHT MODE ---
+
 }  // namespace
 
 void EpubReaderActivity::onEnter() {
@@ -193,6 +256,10 @@ void EpubReaderActivity::onExit() {
 
   renderer.setOrientation(GfxRenderer::Orientation::Portrait);
 
+  // --- HIGHLIGHT MODE ---
+  highlightState.reset();
+  // --- HIGHLIGHT MODE ---
+
   APP_STATE.readerActivityLoadCount = 0;
   APP_STATE.saveToFile();
   section.reset();
@@ -200,6 +267,8 @@ void EpubReaderActivity::onExit() {
 }
 
 void EpubReaderActivity::loop() {
+  static bool pendingPowerPageTurn = false;
+
   // --- POPUP AUTO-DISMISS ---
   static unsigned long clearPopupTimer = 0;
   if (clearPopupTimer > 0 && millis() > clearPopupTimer) {
@@ -266,6 +335,429 @@ void EpubReaderActivity::loop() {
     }
     return;
   }
+
+  // --- HIGHLIGHT MODE --- Force-exit on spine (chapter) change
+  if (highlightState.mode != HighlightState::INACTIVE && previousSpineIndex >= 0 &&
+      currentSpineIndex != previousSpineIndex) {
+    highlightState.reset();
+    LOG_DBG("ERS", "Highlight mode force-exited: spine index changed");
+  }
+  previousSpineIndex = currentSpineIndex;
+
+  // --- HIGHLIGHT MODE --- Power double-tap detection (enter highlight / save highlight)
+  // Step 9: Only process highlight mode inputs if the feature is enabled
+  if (SETTINGS.highlightModeEnabled) {
+    static unsigned long lastPowerRelease = 0;
+    static bool waitingForPowerDoubleTap = false;
+
+    if (mappedInput.wasReleased(MappedInputManager::Button::Power)) {
+      if (waitingForPowerDoubleTap && (millis() - lastPowerRelease < highlightDoubleTapMs)) {
+        // Double-tap Power detected
+        waitingForPowerDoubleTap = false;
+
+        if (highlightState.mode == HighlightState::INACTIVE) {
+          // Enter CURSOR mode
+          RenderLock lock(*this);
+          highlightState.mode = HighlightState::CURSOR;
+          highlightState.cursorLineIndex = 0;
+          LOG_DBG("ERS", "Highlight mode: entered CURSOR");
+          GUI.drawPopup(renderer, "Highlight Mode");
+          clearPopupTimer = millis() + 800;
+          requestUpdate();
+          return;
+        } else if (highlightState.mode == HighlightState::SELECT) {
+          // Save highlight
+          RenderLock lock(*this);
+          // Step 6: Extract highlighted text from the current page
+          std::string extractedText;
+          if (section) {
+            auto extractPage = section->loadPageFromSectionFile();
+            if (extractPage) {
+              // Clamp selection to actual page line count
+              int textLineCount = HighlightStore::countTextLines(*extractPage);
+              int startLine = highlightState.selectionStartLine;
+              int endLine = highlightState.selectionEndLine;
+              if (startLine >= textLineCount) startLine = textLineCount - 1;
+              if (endLine >= textLineCount) endLine = textLineCount - 1;
+              if (startLine < 0) startLine = 0;
+              if (endLine < 0) endLine = 0;
+
+              extractedText = HighlightStore::extractText(
+                  *extractPage, startLine, highlightState.selectionStartCharOffset,
+                  endLine, highlightState.selectionEndCharOffset);
+            }
+          }
+          if (extractedText.empty()) {
+            extractedText = "[no text extracted]";
+          }
+
+          // Gather metadata for save
+          std::string chapterName = "";
+          const int tocIndex = epub->getTocIndexForSpineIndex(currentSpineIndex);
+          if (tocIndex != -1) {
+            chapterName = epub->getTocItem(tocIndex).title;
+          }
+          float bookProgress = 0.0f;
+          if (epub && epub->getBookSize() > 0 && section && section->pageCount > 0) {
+            const float chapterProgress =
+                static_cast<float>(section->currentPage) / static_cast<float>(section->pageCount);
+            bookProgress = epub->calculateProgress(currentSpineIndex, chapterProgress) * 100.0f;
+          }
+
+          HighlightStore::saveHighlight(epub->getTitle(), epub->getAuthor(), currentSpineIndex, chapterName,
+                                        section ? section->currentPage : 0, section ? section->pageCount : 0,
+                                        bookProgress, extractedText);
+
+          highlightState.reset();
+          LOG_DBG("ERS", "Highlight saved, returning to NORMAL");
+          GUI.drawPopup(renderer, "Highlight Saved");
+          clearPopupTimer = millis() + 1000;
+          requestUpdate();
+          return;
+        }
+      } else {
+        waitingForPowerDoubleTap = true;
+        lastPowerRelease = millis();
+        return;  // Prevent fallthrough to navigation section where wasReleased(Power) fires page turn
+      }
+    }
+
+    // Power single-tap timeout: dispatch the short tap action
+    if (waitingForPowerDoubleTap && (millis() - lastPowerRelease > highlightDoubleTapMs)) {
+      waitingForPowerDoubleTap = false;
+
+      if (highlightState.mode == HighlightState::CURSOR) {
+        // Short Power tap in CURSOR mode → enter SELECT
+        RenderLock lock(*this);
+        highlightState.mode = HighlightState::SELECT;
+        highlightState.selectionStartLine = highlightState.cursorLineIndex;
+        highlightState.selectionEndLine = highlightState.cursorLineIndex;
+        highlightState.selectionInitialized = true;
+
+        // Snap to sentence start; find sentence end even if it spans multiple lines
+        highlightState.selectionStartCharOffset = 0;
+        highlightState.selectionEndCharOffset = -1;
+        if (section) {
+          auto tempPage = section->loadPageFromSectionFile();
+          if (tempPage) {
+            int lineCount = HighlightStore::countTextLines(*tempPage);
+            std::string startLineText =
+                HighlightStore::getLineText(*tempPage, highlightState.cursorLineIndex);
+            highlightState.selectionStartCharOffset =
+                HighlightStore::findFirstSentenceStart(startLineText);
+
+            // Search forward through lines for the first sentence-ending punctuation
+            bool foundEnd = false;
+            for (int li = highlightState.selectionStartLine; li < lineCount && !foundEnd; li++) {
+              std::string lineText = HighlightStore::getLineText(*tempPage, li);
+              int searchFrom = (li == highlightState.selectionStartLine)
+                                   ? highlightState.selectionStartCharOffset
+                                   : 0;
+              for (int ci = searchFrom; ci < (int)lineText.size(); ci++) {
+                char c = lineText[ci];
+                if (c == '.' || c == '!' || c == '?') {
+                  highlightState.selectionEndLine = li;
+                  highlightState.selectionEndCharOffset = ci + 1;
+                  foundEnd = true;
+                  break;
+                }
+              }
+            }
+            if (!foundEnd) {
+              highlightState.selectionEndLine = highlightState.selectionStartLine;
+              highlightState.selectionEndCharOffset = -1;
+            }
+          }
+        }
+
+        LOG_DBG("ERS", "Highlight mode: entered SELECT at line %d (startChar=%d, endChar=%d)",
+                highlightState.cursorLineIndex, highlightState.selectionStartCharOffset,
+                highlightState.selectionEndCharOffset);
+        requestUpdate();
+        return;
+      }
+      // If INACTIVE: set pending flag so page turn fires below
+      if (highlightState.mode == HighlightState::INACTIVE) {
+        pendingPowerPageTurn = true;
+      }
+      // If SELECT: single Power tap does nothing (only double-tap saves)
+      if (highlightState.mode == HighlightState::SELECT) {
+        return;  // consume the event
+      }
+    }
+  }  // if (SETTINGS.highlightModeEnabled)
+
+  // --- HIGHLIGHT MODE --- Input interception when active
+  if (highlightState.mode != HighlightState::INACTIVE) {
+    // Long-press Back → cancel and exit highlight mode (from any state)
+    if (mappedInput.isPressed(MappedInputManager::Button::Back) && mappedInput.getHeldTime() >= highlightLongPressMs) {
+      RenderLock lock(*this);
+      highlightState.reset();
+      LOG_DBG("ERS", "Highlight mode: cancelled via long-press Back");
+      requestUpdate();
+      return;
+    }
+
+    if (highlightState.mode == HighlightState::CURSOR) {
+      // BTN_UP / BTN_DOWN move cursor line by line
+      if (mappedInput.wasReleased(MappedInputManager::Button::Up)) {
+        RenderLock lock(*this);
+        if (highlightState.cursorLineIndex > 0) {
+          highlightState.cursorLineIndex--;
+          LOG_DBG("ERS", "Highlight cursor up → line %d", highlightState.cursorLineIndex);
+          requestUpdate();
+        }
+        return;
+      }
+      if (mappedInput.wasReleased(MappedInputManager::Button::Down)) {
+        RenderLock lock(*this);
+        // Step 5: Clamp cursor to actual number of text lines on current page
+        // We need the page to count lines, but we don't have it in loop().
+        // Instead, we allow the cursor to advance freely here and clamp in render().
+        // A max safety limit prevents runaway values.
+        highlightState.cursorLineIndex++;
+        if (highlightState.cursorLineIndex > 200) highlightState.cursorLineIndex = 200;  // safety cap
+        LOG_DBG("ERS", "Highlight cursor down → line %d", highlightState.cursorLineIndex);
+        requestUpdate();
+        return;
+      }
+    }
+
+    if (highlightState.mode == HighlightState::SELECT) {
+      // BTN_UP shrinks selection by one line (but not below start line)
+      if (mappedInput.wasReleased(MappedInputManager::Button::Up)) {
+        RenderLock lock(*this);
+        if (highlightState.selectionEndLine > highlightState.selectionStartLine) {
+          highlightState.selectionEndLine--;
+          // Snap end char to sentence boundary on the new end line
+          highlightState.selectionEndCharOffset = -1;
+          if (section) {
+            auto tempPage = section->loadPageFromSectionFile();
+            if (tempPage) {
+              std::string lineText = HighlightStore::getLineText(*tempPage, highlightState.selectionEndLine);
+              int sentenceEnd = HighlightStore::findLastSentenceEnd(lineText);
+              highlightState.selectionEndCharOffset = (sentenceEnd > 0) ? sentenceEnd : -1;
+            }
+          }
+          LOG_DBG("ERS", "Highlight select shrunk → end line %d (endChar=%d)",
+                  highlightState.selectionEndLine, highlightState.selectionEndCharOffset);
+          requestUpdate();
+        }
+        return;
+      }
+
+      // BTN_DOWN extends selection to the end of the next full sentence
+      if (mappedInput.wasReleased(MappedInputManager::Button::Down)) {
+        RenderLock lock(*this);
+        if (section) {
+          auto tempPage = section->loadPageFromSectionFile();
+          if (tempPage) {
+            const int lineCount = HighlightStore::countTextLines(*tempPage);
+            // Start searching just past the current sentence end
+            int searchLine = highlightState.selectionEndLine;
+            int searchChar = (highlightState.selectionEndCharOffset == -1)
+                                 ? static_cast<int>(
+                                       HighlightStore::getLineText(*tempPage, searchLine).size())
+                                 : highlightState.selectionEndCharOffset;
+
+            bool found = false;
+            for (int li = searchLine; li < lineCount && !found; li++) {
+              std::string lineText = HighlightStore::getLineText(*tempPage, li);
+              int ci = (li == searchLine) ? searchChar : 0;
+              for (; ci < static_cast<int>(lineText.size()); ci++) {
+                char c = lineText[ci];
+                if (c == '.' || c == '!' || c == '?') {
+                  highlightState.selectionEndLine = li;
+                  highlightState.selectionEndCharOffset = ci + 1;
+                  found = true;
+                  break;
+                }
+              }
+            }
+            // If no sentence end found on page, extend to end of last line
+            if (!found) {
+              highlightState.selectionEndLine = lineCount - 1;
+              highlightState.selectionEndCharOffset = -1;
+            }
+          }
+        }
+        LOG_DBG("ERS", "Highlight select extended → end line %d (endChar=%d)",
+                highlightState.selectionEndLine, highlightState.selectionEndCharOffset);
+        requestUpdate();
+        return;
+      }
+
+      // Left rocker Back → fine-adjust selection start: move left by one word
+      if (mappedInput.wasReleased(MappedInputManager::Button::Back) &&
+          mappedInput.getHeldTime() < highlightLongPressMs) {
+        RenderLock lock(*this);
+        if (highlightState.selectionStartCharOffset > 0 && section) {
+          auto tempPage = section->loadPageFromSectionFile();
+          if (tempPage) {
+            std::string lineText = HighlightStore::getLineText(*tempPage, highlightState.selectionStartLine);
+            int off = highlightState.selectionStartCharOffset - 1;
+            // Skip any trailing space immediately before current position
+            while (off > 0 && off < (int)lineText.size() && lineText[off] == ' ') off--;
+            // Walk back to the start of the current/previous word
+            while (off > 0 && lineText[off - 1] != ' ') off--;
+            highlightState.selectionStartCharOffset = off;
+          } else {
+            highlightState.selectionStartCharOffset--;
+          }
+        } else if (highlightState.selectionStartCharOffset > 0) {
+          highlightState.selectionStartCharOffset--;
+        } else if (highlightState.selectionStartLine > 0 && section) {
+          // At start of line — cross to last word of previous line
+          auto tempPage = section->loadPageFromSectionFile();
+          if (tempPage) {
+            highlightState.selectionStartLine--;
+            std::string prevLine =
+                HighlightStore::getLineText(*tempPage, highlightState.selectionStartLine);
+            int off = (int)prevLine.size();
+            while (off > 0 && prevLine[off - 1] == ' ') off--;
+            while (off > 0 && prevLine[off - 1] != ' ') off--;
+            highlightState.selectionStartCharOffset = off;
+          }
+        }
+        LOG_DBG("ERS", "Highlight start word-left → %d", highlightState.selectionStartCharOffset);
+        requestUpdate();
+        return;
+      }
+
+      // Left rocker Confirm → fine-adjust selection start: move right by one word
+      if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+        RenderLock lock(*this);
+        if (section) {
+          auto tempPage = section->loadPageFromSectionFile();
+          if (tempPage) {
+            std::string lineText = HighlightStore::getLineText(*tempPage, highlightState.selectionStartLine);
+            int off = highlightState.selectionStartCharOffset;
+            // Skip past the current word
+            while (off < (int)lineText.size() && lineText[off] != ' ') off++;
+            // Skip the space(s)
+            while (off < (int)lineText.size() && lineText[off] == ' ') off++;
+            if (off < (int)lineText.size()) {
+              highlightState.selectionStartCharOffset = off;
+            } else if (highlightState.selectionStartLine < highlightState.selectionEndLine) {
+              // At end of line — cross to start of next line
+              highlightState.selectionStartLine++;
+              highlightState.selectionStartCharOffset = 0;
+            }
+          } else {
+            highlightState.selectionStartCharOffset++;
+          }
+        } else {
+          highlightState.selectionStartCharOffset++;
+        }
+        LOG_DBG("ERS", "Highlight start word-right → %d", highlightState.selectionStartCharOffset);
+        requestUpdate();
+        return;
+      }
+
+      // Right rocker Left → fine-adjust selection end: move left by one word
+      if (mappedInput.wasReleased(MappedInputManager::Button::Left)) {
+        RenderLock lock(*this);
+        if (section) {
+          auto tempPage = section->loadPageFromSectionFile();
+          if (tempPage) {
+            std::string lineText = HighlightStore::getLineText(*tempPage, highlightState.selectionEndLine);
+            int off = highlightState.selectionEndCharOffset;
+            if (off == -1) off = static_cast<int>(lineText.size());
+            // Skip back past any trailing space
+            while (off > 0 && off <= (int)lineText.size() && lineText[off - 1] == ' ') off--;
+            // Walk back to start of this word
+            while (off > 0 && lineText[off - 1] != ' ') off--;
+            // Point to just before the space — i.e. end of previous word
+            if (off > 0) {
+              // find end of previous word
+              int wordEnd = off - 1;
+              while (wordEnd > 0 && lineText[wordEnd - 1] != ' ') wordEnd--;
+              // off = start of current word, so end of previous is off-1 minus trailing spaces
+              highlightState.selectionEndCharOffset = off - 1;
+              while (highlightState.selectionEndCharOffset > 0 &&
+                     lineText[highlightState.selectionEndCharOffset] == ' ')
+                highlightState.selectionEndCharOffset--;
+              highlightState.selectionEndCharOffset++;  // one past last char of prev word
+            } else {
+              highlightState.selectionEndCharOffset = 0;
+            }
+          } else {
+            // fallback: resolve -1 then decrement
+            if (highlightState.selectionEndCharOffset == -1)
+              highlightState.selectionEndCharOffset = 50;
+            if (highlightState.selectionEndCharOffset > 0)
+              highlightState.selectionEndCharOffset--;
+          }
+          // If we've hit the very start of the end line, cross to end of previous line
+          if (highlightState.selectionEndCharOffset == 0 &&
+              highlightState.selectionEndLine > highlightState.selectionStartLine) {
+            highlightState.selectionEndLine--;
+            highlightState.selectionEndCharOffset = -1;
+          }
+        } else {
+          if (highlightState.selectionEndCharOffset == -1)
+            highlightState.selectionEndCharOffset = 50;
+          if (highlightState.selectionEndCharOffset > 0)
+            highlightState.selectionEndCharOffset--;
+        }
+        LOG_DBG("ERS", "Highlight end word-left → %d", highlightState.selectionEndCharOffset);
+        requestUpdate();
+        return;
+      }
+
+      // Right rocker Right → fine-adjust selection end: move right by one word
+      if (mappedInput.wasReleased(MappedInputManager::Button::Right)) {
+        RenderLock lock(*this);
+        if (section) {
+          auto tempPage = section->loadPageFromSectionFile();
+          if (tempPage) {
+            int lineCount = HighlightStore::countTextLines(*tempPage);
+            if (highlightState.selectionEndCharOffset == -1) {
+              // At end of current line — cross to next line
+              if (highlightState.selectionEndLine + 1 < lineCount) {
+                highlightState.selectionEndLine++;
+                std::string nextLine =
+                    HighlightStore::getLineText(*tempPage, highlightState.selectionEndLine);
+                int off = 0;
+                // Move past first word to land after it
+                while (off < (int)nextLine.size() && nextLine[off] != ' ') off++;
+                while (off < (int)nextLine.size() && nextLine[off] == ' ') off++;
+                highlightState.selectionEndCharOffset = (off < (int)nextLine.size()) ? off : -1;
+              }
+            } else {
+              std::string lineText =
+                  HighlightStore::getLineText(*tempPage, highlightState.selectionEndLine);
+              int off = highlightState.selectionEndCharOffset;
+              // Skip past any space at current position
+              while (off < (int)lineText.size() && lineText[off] == ' ') off++;
+              // Skip past the current word
+              while (off < (int)lineText.size() && lineText[off] != ' ') off++;
+              // Skip trailing space(s) to land on start of next word
+              while (off < (int)lineText.size() && lineText[off] == ' ') off++;
+              if (off >= (int)lineText.size()) {
+                highlightState.selectionEndCharOffset = -1;  // reached end of line
+              } else {
+                highlightState.selectionEndCharOffset = off;
+              }
+            }
+          } else {
+            highlightState.selectionEndCharOffset++;
+          }
+        }
+        LOG_DBG("ERS", "Highlight end word-right → %d", highlightState.selectionEndCharOffset);
+        requestUpdate();
+        return;
+      }
+    }
+
+    // Consume ALL other inputs silently — this blocks page turns, formatting, menu, etc.
+    // regardless of which physical button is mapped to what action.
+    if (mappedInput.wasAnyReleased() || mappedInput.wasAnyPressed()) {
+      return;
+    }
+    return;
+  }
+  // --- HIGHLIGHT MODE --- (end of input interception)
 
   // --- CONFIRM BUTTON (MENU / HELP) ---
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
@@ -580,7 +1072,8 @@ void EpubReaderActivity::loop() {
   bool prevTriggered = usePressForPageTurn ? mappedInput.wasPressed(btnNavPrev) : mappedInput.wasReleased(btnNavPrev);
 
   const bool powerPageTurn = SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::PAGE_TURN &&
-                             mappedInput.wasReleased(MappedInputManager::Button::Power);
+                             (pendingPowerPageTurn || mappedInput.wasReleased(MappedInputManager::Button::Power));
+  pendingPowerPageTurn = false;
 
   bool nextTriggered = usePressForPageTurn ? (mappedInput.wasPressed(btnNavNext) || powerPageTurn)
                                            : (mappedInput.wasReleased(btnNavNext) || powerPageTurn);
@@ -1040,6 +1533,197 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
     renderer.invertScreen();
   }
 
+  // --- HIGHLIGHT MODE --- Rendering overlay (Step 5) + Visual indicator (Step 7)
+  bool drewHighlights = false;  // tracks whether any highlights were drawn this frame
+  if (highlightState.mode != HighlightState::INACTIVE) {
+    const int fontId = SETTINGS.getReaderFontId();
+    const int textLineCount = HighlightStore::countTextLines(*page);
+
+    // Step 7: Draw "HL" mode indicator at top-right corner
+    {
+      const char* modeLabel = (highlightState.mode == HighlightState::CURSOR) ? "HL" : "SEL";
+      const int labelWidth = renderer.getTextWidth(SMALL_FONT_ID, modeLabel);
+      const int labelX = renderer.getScreenWidth() - orientedMarginRight - labelWidth - 2;
+      const int labelY = orientedMarginTop - 14;  // just above content area
+      // Draw inverted badge: white text on black background
+      renderer.fillRect(labelX - 3, labelY - 1, labelWidth + 6, 14, true);
+      renderer.drawText(SMALL_FONT_ID, labelX, labelY, modeLabel, false);  // white text
+    }
+
+    if (highlightState.mode == HighlightState::CURSOR && textLineCount > 0) {
+      // Clamp cursor to valid range
+      int cursorLine = highlightState.cursorLineIndex;
+      if (cursorLine >= textLineCount) cursorLine = textLineCount - 1;
+      if (cursorLine < 0) cursorLine = 0;
+
+      // Get the geometry for this text line
+      int16_t lineY = 0, lineH = 0;
+      if (HighlightStore::getLineGeometry(*page, fontId, cursorLine, lineY, lineH)) {
+        // Draw inverted bar across the full width of the content area
+        const int barX = orientedMarginLeft;
+        const int barW = renderer.getScreenWidth() - orientedMarginLeft - orientedMarginRight;
+        const int barY = lineY + orientedMarginTop;
+        // In light mode: black bar + white text. In night mode (buffer already inverted):
+        // white bar + black text, so the highlight contrasts against the dark background.
+        drewHighlights = true;
+        renderer.fillRect(barX, barY, barW, lineH, !isNightMode);
+        int textIdx = 0;
+        for (const auto& el : page->elements) {
+          if (el->getTag() == TAG_PageLine) {
+            if (textIdx == cursorLine) {
+              auto* pl = static_cast<PageLine*>(el.get());
+              const auto& block = pl->getBlock();
+              const auto& words = block->getWords();
+              const auto& xpositions = block->getWordXPositions();
+              auto wordIt = words.begin();
+              auto xposIt = xpositions.begin();
+              for (size_t w = 0; w < words.size(); w++) {
+                renderer.drawText(fontId, *xposIt + orientedMarginLeft,
+                                  pl->yPos + orientedMarginTop, wordIt->c_str(), isNightMode);
+                ++wordIt;
+                ++xposIt;
+              }
+              break;
+            }
+            textIdx++;
+          }
+        }
+      }
+    } else if (highlightState.mode == HighlightState::SELECT && textLineCount > 0) {
+      // Draw inverted highlight over the selected range
+      int startLine = highlightState.selectionStartLine;
+      int endLine = highlightState.selectionEndLine;
+      if (startLine < 0) startLine = 0;
+      if (endLine >= textLineCount) endLine = textLineCount - 1;
+
+      for (int lineIdx = startLine; lineIdx <= endLine; lineIdx++) {
+        int16_t lineY = 0, lineH = 0;
+        if (!HighlightStore::getLineGeometry(*page, fontId, lineIdx, lineY, lineH)) continue;
+
+        // Find the PageLine pointer for this text line index
+        PageLine* pl = nullptr;
+        {
+          int textIdx = 0;
+          for (const auto& el : page->elements) {
+            if (el->getTag() == TAG_PageLine) {
+              if (textIdx == lineIdx) {
+                pl = static_cast<PageLine*>(el.get());
+                break;
+              }
+              textIdx++;
+            }
+          }
+        }
+        if (!pl) continue;
+
+        // Compute bar dimensions, trimming for start/end char offsets
+        int barX = orientedMarginLeft;
+        int barW = renderer.getScreenWidth() - orientedMarginLeft - orientedMarginRight;
+
+        // For start line: trim left edge — bar starts at the word containing startChar
+        if (lineIdx == startLine && highlightState.selectionStartCharOffset > 0) {
+          int16_t startPx = charOffsetToStartPixel(pl, highlightState.selectionStartCharOffset);
+          barX = orientedMarginLeft + startPx;
+          barW = (renderer.getScreenWidth() - orientedMarginRight) - barX;
+        }
+        // For end line: trim right edge — bar ends just before the word AFTER endChar,
+        // so the full last word of the sentence is included in the highlight
+        if (lineIdx == endLine && highlightState.selectionEndCharOffset != -1 &&
+            highlightState.selectionEndCharOffset > 0) {
+          int endPx = charOffsetToEndPixel(pl, highlightState.selectionEndCharOffset);
+          if (endPx >= 0) {
+            barW = endPx - (barX - orientedMarginLeft);
+          }
+          // endPx == -1 means charOffset is in the last word: keep full width
+        }
+        if (barW <= 0) continue;  // nothing to draw
+
+        const int barY = lineY + orientedMarginTop;
+
+        drewHighlights = true;
+        renderer.fillRect(barX, barY, barW, lineH, !isNightMode);
+
+        const auto& words = pl->getBlock()->getWords();
+        const auto& xpositions = pl->getBlock()->getWordXPositions();
+        auto wordIt = words.begin();
+        auto xposIt = xpositions.begin();
+        for (size_t w = 0; w < words.size(); w++) {
+          renderer.drawText(fontId, *xposIt + orientedMarginLeft,
+                            pl->yPos + orientedMarginTop, wordIt->c_str(), isNightMode);
+          ++wordIt;
+          ++xposIt;
+        }
+      }
+    }
+  }
+  // --- HIGHLIGHT MODE ---
+
+  // --- HIGHLIGHT MODE --- Draw saved (persisted) highlights
+  if (SETTINGS.highlightModeEnabled && section) {
+    const int fontId = SETTINGS.getReaderFontId();
+    int currentPageIdx = section->currentPage;
+    auto savedHighlights = HighlightStore::loadHighlightsForPage(
+        epub->getTitle(), currentSpineIndex, currentPageIdx);
+
+    for (const auto& hl : savedHighlights) {
+      int startLine = 0, startChar = 0, endLine = 0, endChar = -1;
+      if (!HighlightStore::findHighlightBounds(*page, hl.text, startLine, startChar, endLine, endChar)) continue;
+      const int textLineCount = HighlightStore::countTextLines(*page);
+      if (startLine < 0) startLine = 0;
+      if (endLine >= textLineCount) endLine = textLineCount - 1;
+
+      for (int lineIdx = startLine; lineIdx <= endLine; lineIdx++) {
+        int16_t lineY = 0, lineH = 0;
+        if (!HighlightStore::getLineGeometry(*page, fontId, lineIdx, lineY, lineH)) continue;
+
+        // Find the PageLine pointer for pixel-accurate trimming
+        PageLine* pl = nullptr;
+        {
+          int tidx = 0;
+          for (const auto& el : page->elements) {
+            if (el->getTag() == TAG_PageLine) {
+              if (tidx == lineIdx) { pl = static_cast<PageLine*>(el.get()); break; }
+              tidx++;
+            }
+          }
+        }
+        if (!pl) continue;
+
+        int barX = orientedMarginLeft;
+        int barW = renderer.getScreenWidth() - orientedMarginLeft - orientedMarginRight;
+
+        // Trim left edge of first line to match sentence start word
+        if (lineIdx == startLine && startChar > 0) {
+          int16_t startPx = charOffsetToStartPixel(pl, startChar);
+          barX = orientedMarginLeft + startPx;
+          barW = (renderer.getScreenWidth() - orientedMarginRight) - barX;
+        }
+        // Trim right edge of last line to match sentence end word
+        if (lineIdx == endLine && endChar != -1 && endChar > 0) {
+          int endPx = charOffsetToEndPixel(pl, endChar);
+          if (endPx >= 0) barW = endPx - (barX - orientedMarginLeft);
+        }
+        if (barW <= 0) continue;
+
+        const int barY = lineY + orientedMarginTop;
+        drewHighlights = true;
+        renderer.fillRect(barX, barY, barW, lineH, !isNightMode);
+
+        const auto& words = pl->getBlock()->getWords();
+        const auto& xpositions = pl->getBlock()->getWordXPositions();
+        auto wordIt = words.begin();
+        auto xposIt = xpositions.begin();
+        for (size_t w = 0; w < words.size(); w++) {
+          renderer.drawText(fontId, *xposIt + orientedMarginLeft,
+                            pl->yPos + orientedMarginTop, wordIt->c_str(), isNightMode);
+          ++wordIt;
+          ++xposIt;
+        }
+      }
+    }
+  }
+  // --- HIGHLIGHT MODE ---
+
   // --- HELP OVERLAY RENDERING ---
   if (showHelpOverlay) {
     const int w = renderer.getScreenWidth();
@@ -1055,6 +1739,21 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
                 "PRESS ANY KEY\n"
                 "TO DISMISS",
                 BoxAlign::CENTER, overlayFontId, overlayLineHeight);
+
+    // --- HIGHLIGHT MODE --- Step 8: Help overlay for highlight mode
+    if (SETTINGS.highlightModeEnabled) {
+      int hlHelpY = (SETTINGS.orientation == CrossPointSettings::ORIENTATION::PORTRAIT) ? 60 : 40;
+      drawHelpBox(renderer, w / 2, hlHelpY,
+                  "HIGHLIGHT MODE\n"
+                  "2x Pwr: Enter/Save\n"
+                  "Up/Down: Move cursor\n"
+                  "1x Pwr: Start select\n"
+                  "L rocker: Adjust start\n"
+                  "R rocker: Adjust end\n"
+                  "Hold Back: Cancel",
+                  BoxAlign::CENTER, overlayFontId, overlayLineHeight);
+    }
+    // --- HIGHLIGHT MODE ---
 
     const bool isLandscape = (SETTINGS.orientation == CrossPointSettings::ORIENTATION::LANDSCAPE_CW ||
                               SETTINGS.orientation == CrossPointSettings::ORIENTATION::LANDSCAPE_CCW);
@@ -1178,6 +1877,11 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
     renderer.setRenderMode(GfxRenderer::BW);
   }
   renderer.restoreBwBuffer();
+  // If anti-aliasing ran, it wiped highlights from the display. The BW buffer (restored above)
+  // still has the highlights — do one fast refresh to put them back on screen.
+  if (drewHighlights && SETTINGS.textAntiAliasing && !showHelpOverlay && !isNightMode) {
+    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+  }
 }
 
 void EpubReaderActivity::renderStatusBar(const int orientedMarginRight, const int orientedMarginBottom,

@@ -5,6 +5,29 @@
 #include "EpubReaderMenuActivity.h"
 #include "activities/ActivityWithSubactivity.h"
 
+// --- HIGHLIGHT MODE ---
+struct HighlightState {
+  enum Mode { INACTIVE, CURSOR, SELECT };
+  Mode mode = INACTIVE;
+  int cursorLineIndex = 0;        // which PageLine (text-only) the cursor is on
+  int selectionStartLine = 0;
+  int selectionStartCharOffset = 0;
+  int selectionEndLine = 0;
+  int selectionEndCharOffset = 0;  // -1 = end of line (last char)
+  bool selectionInitialized = false;
+
+  void reset() {
+    mode = INACTIVE;
+    cursorLineIndex = 0;
+    selectionStartLine = 0;
+    selectionStartCharOffset = 0;
+    selectionEndLine = 0;
+    selectionEndCharOffset = 0;
+    selectionInitialized = false;
+  }
+};
+// --- HIGHLIGHT MODE ---
+
 class EpubReaderActivity final : public ActivityWithSubactivity {
   std::shared_ptr<Epub> epub;
   std::unique_ptr<Section> section = nullptr;
@@ -22,6 +45,10 @@ class EpubReaderActivity final : public ActivityWithSubactivity {
   bool pendingSubactivityExit = false;  // Defer subactivity exit to avoid use-after-free
   bool pendingGoHome = false;           // Defer go home to avoid race condition with display task
   bool skipNextButtonCheck = false;     // Skip button processing for one frame after subactivity exit
+  // --- HIGHLIGHT MODE ---
+  HighlightState highlightState;
+  int previousSpineIndex = -1;          // Track spine changes for force-exit
+  // --- HIGHLIGHT MODE ---
   const std::function<void()> onGoBack;
   const std::function<void()> onGoHome;
 
