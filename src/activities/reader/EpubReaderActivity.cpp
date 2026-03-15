@@ -454,6 +454,7 @@ void EpubReaderActivity::loop() {
         // Snap to sentence start; find sentence end, crossing to next page if needed
         highlightState.selectionStartCharOffset = 0;
         highlightState.selectionEndCharOffset = -1;
+        highlightState.selectionStartPage = section ? section->currentPage : -1;
         highlightState.selectionEndPage = section ? section->currentPage : -1;
         if (section) {
           auto tempPage = section->loadPageFromSectionFile();
@@ -575,6 +576,11 @@ void EpubReaderActivity::loop() {
               }
             }
           }
+        }
+        // Auto-turn to the end page so the user can see what's selected
+        if (section && highlightState.selectionEndPage >= 0 &&
+            highlightState.selectionEndPage != section->currentPage) {
+          section->currentPage = highlightState.selectionEndPage;
         }
         requestUpdate();
         return;
@@ -700,6 +706,11 @@ void EpubReaderActivity::loop() {
         LOG_DBG("ERS", "Highlight select extended → page=%d line=%d char=%d",
                 highlightState.selectionEndPage, highlightState.selectionEndLine,
                 highlightState.selectionEndCharOffset);
+        // Auto-turn to the end page so the user can see what's selected
+        if (section && highlightState.selectionEndPage >= 0 &&
+            highlightState.selectionEndPage != section->currentPage) {
+          section->currentPage = highlightState.selectionEndPage;
+        }
         requestUpdate();
         return;
       }
@@ -1709,12 +1720,21 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
         }
       }
     } else if (highlightState.mode == HighlightState::SELECT && textLineCount > 0) {
-      // Draw inverted highlight over the selected range
-      int startLine = highlightState.selectionStartLine;
-      // If the selection ends on a later page, highlight to end of this page
-      const bool endOnLaterPage = section &&
-                                  highlightState.selectionEndPage > section->currentPage;
-      int endLine = endOnLaterPage ? (textLineCount - 1) : highlightState.selectionEndLine;
+      // Determine this page's role in the selection
+      const int viewPage = section ? section->currentPage : -1;
+      const int selStartPage = (highlightState.selectionStartPage >= 0)
+                                   ? highlightState.selectionStartPage : viewPage;
+      const int selEndPage = (highlightState.selectionEndPage >= 0)
+                                 ? highlightState.selectionEndPage : viewPage;
+      const bool onStartPage = (viewPage == selStartPage);
+      const bool onEndPage   = (viewPage == selEndPage);
+
+      // Start of highlighted range: line 0 if we've turned past the start page
+      int startLine = onStartPage ? highlightState.selectionStartLine : 0;
+      // End of highlighted range: last line if selection continues to a later page
+      int endLine   = onEndPage   ? highlightState.selectionEndLine   : (textLineCount - 1);
+      const bool endOnLaterPage = !onEndPage;
+
       if (startLine < 0) startLine = 0;
       if (endLine >= textLineCount) endLine = textLineCount - 1;
 
@@ -1742,8 +1762,8 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
         int barX = orientedMarginLeft;
         int barW = renderer.getScreenWidth() - orientedMarginLeft - orientedMarginRight;
 
-        // For start line: trim left edge — bar starts at the word containing startChar
-        if (lineIdx == startLine && highlightState.selectionStartCharOffset > 0) {
+        // For start line: trim left edge (only on the page where selection begins)
+        if (onStartPage && lineIdx == startLine && highlightState.selectionStartCharOffset > 0) {
           int16_t startPx = charOffsetToStartPixel(pl, highlightState.selectionStartCharOffset);
           barX = orientedMarginLeft + startPx;
           barW = (renderer.getScreenWidth() - orientedMarginRight) - barX;

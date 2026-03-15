@@ -14,7 +14,8 @@ struct HighlightState {
   int selectionStartCharOffset = 0;
   int selectionEndLine = 0;
   int selectionEndCharOffset = 0;  // -1 = end of line (last char)
-  int selectionEndPage = -1;       // page index where selection ends (-1 = same as current page)
+  int selectionStartPage = -1;     // page index where selection begins
+  int selectionEndPage = -1;       // page index where selection ends
   bool selectionInitialized = false;
 
   void reset() {
@@ -24,6 +25,7 @@ struct HighlightState {
     selectionStartCharOffset = 0;
     selectionEndLine = 0;
     selectionEndCharOffset = 0;
+    selectionStartPage = -1;
     selectionEndPage = -1;
     selectionInitialized = false;
   }
