@@ -2100,6 +2100,11 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   }
 
   // --- STANDARD or IMAGE REFRESH ---
+  // Compute highlight mode flag here; also used below for the AA skip guard.
+  // In highlight mode, always use FAST_REFRESH for every line transition — the highlight
+  // overlay is BW-only and the periodic HALF_REFRESH cadence adds ~400ms latency per trigger
+  // with no visual benefit while the cursor/selection is active.
+  const bool inHighlightMode = (highlightState.mode != HighlightState::INACTIVE);
   if (imagePageWithAA) {
     // Double FAST_REFRESH with selective image blanking (pablohc's technique):
     // HALF_REFRESH sets particles too firmly for the grayscale LUT to adjust.
@@ -2119,19 +2124,18 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
       renderer.displayBuffer(HalDisplay::HALF_REFRESH);
     }
     // Double FAST_REFRESH handles ghosting for image pages; don't count toward full refresh cadence
-  } else if (pagesUntilFullRefresh <= 1) {
+  } else if (!inHighlightMode && pagesUntilFullRefresh <= 1) {
     renderer.displayBuffer(HalDisplay::HALF_REFRESH);
     pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
   } else {
-    renderer.displayBuffer();
-    pagesUntilFullRefresh--;
+    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+    if (!inHighlightMode) pagesUntilFullRefresh--;
   }
 
   renderer.storeBwBuffer();
 
   // Skip anti-aliasing in highlight mode: the extra grayscale passes add ~200ms per line
   // transition with no visual benefit for the highlight overlay. Use the fast BW path instead.
-  const bool inHighlightMode = (highlightState.mode != HighlightState::INACTIVE);
   if (SETTINGS.textAntiAliasing && !showHelpOverlay && !isNightMode && !inHighlightMode) {
     renderer.clearScreen(0x00);
 
