@@ -466,15 +466,21 @@ void EpubReaderActivity::loop() {
                 HighlightStore::loadHighlightsForPage(epub->getTitle(), currentSpineIndex, curPageIdx);
             for (const auto& hl : savedHighlights) {
               int sl = 0, sc = 0, el = 0, ec = -1;
-              if (HighlightStore::findHighlightBounds(*curPage, hl.text, HighlightStore::HighlightPageRole::FULL, sl,
-                                                      sc, el, ec)) {
-                if (cursorLine >= sl && cursorLine <= el) {
-                  HighlightStore::deleteHighlight(epub->getTitle(), hl.spineIndex, hl.startPage, hl.endPage);
-                  deletedHighlight = true;
-                  LOG_DBG("ERS", "Highlight deleted via single-tap: spine=%d pages=%d-%d", hl.spineIndex, hl.startPage,
-                          hl.endPage);
-                  break;
-                }
+              bool boundsFound = HighlightStore::findHighlightBounds(*curPage, hl.text, HighlightStore::HighlightPageRole::FULL, sl,
+                                                                     sc, el, ec);
+              if (!boundsFound) {
+                // findHighlightBounds failed (encoding/whitespace mismatch) — fall back to treating
+                // the entire page as the highlight extent so erase still works
+                sl = 0;
+                el = textLineCount - 1;
+                LOG_DBG("ERS", "Highlight erase fallback: bounds not found for spine=%d, using full page range", hl.spineIndex);
+              }
+              if (cursorLine >= sl && cursorLine <= el) {
+                HighlightStore::deleteHighlight(epub->getTitle(), hl.spineIndex, hl.startPage, hl.endPage);
+                deletedHighlight = true;
+                LOG_DBG("ERS", "Highlight deleted via single-tap: spine=%d pages=%d-%d", hl.spineIndex, hl.startPage,
+                        hl.endPage);
+                break;
               }
             }
           }
@@ -787,6 +793,32 @@ void EpubReaderActivity::loop() {
       highlightCachedPage = -1;
       LOG_DBG("ERS", "Highlight mode: cancelled via long-press Back");
       requestUpdate();
+      return;
+    }
+
+    // Left+Right chord (either button pressed while other is held): clear ALL highlights on current page,
+    // stay in highlight mode (useful when erase is being finicky or to wipe a whole page at once)
+    if ((mappedInput.wasPressed(MappedInputManager::Button::Left) && mappedInput.isPressed(MappedInputManager::Button::Right)) ||
+        (mappedInput.wasPressed(MappedInputManager::Button::Right) && mappedInput.isPressed(MappedInputManager::Button::Left))) {
+      RenderLock lock(*this);
+      if (section && epub) {
+        int curPageIdx = section->currentPage;
+        auto savedHighlights = HighlightStore::loadHighlightsForPage(epub->getTitle(), currentSpineIndex, curPageIdx);
+        int count = 0;
+        for (const auto& hl : savedHighlights) {
+          HighlightStore::deleteHighlight(epub->getTitle(), hl.spineIndex, hl.startPage, hl.endPage);
+          count++;
+        }
+        highlightCachedPage = -1;
+        if (count > 0) {
+          LOG_DBG("ERS", "Highlight chord: cleared %d highlight(s) on page %d", count, curPageIdx);
+          GUI.drawPopup(renderer, "Highlights Cleared");
+          clearPopupTimer = millis() + 1000;
+        } else {
+          LOG_DBG("ERS", "Highlight chord: no highlights on page %d to clear", curPageIdx);
+        }
+        requestUpdate();
+      }
       return;
     }
 
@@ -2046,12 +2078,18 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
 
     for (const auto& hl : savedHighlights) {
       // Try FULL first (both first and last word on this page), then START (first word
-      // here, continues to next page), then END (last word here, started on previous page).
+      // here, continues to next page), then MIDDLE (intermediate page, entire page
+      // highlighted), then END (last word here, started on previous page).
       // This handles highlights that span pages after font size / layout changes.
+      // MIDDLE must be tried before END — without it, END would incorrectly match on
+      // intermediate pages whenever the highlight's last word happens to appear there,
+      // causing only the top line(s) to be highlighted instead of the full page.
       int startLine = 0, startChar = 0, endLine = 0, endChar = -1;
       if (!HighlightStore::findHighlightBounds(*page, hl.text, HighlightStore::HighlightPageRole::FULL, startLine,
                                                startChar, endLine, endChar) &&
           !HighlightStore::findHighlightBounds(*page, hl.text, HighlightStore::HighlightPageRole::START, startLine,
+                                               startChar, endLine, endChar) &&
+          !HighlightStore::findHighlightBounds(*page, hl.text, HighlightStore::HighlightPageRole::MIDDLE, startLine,
                                                startChar, endLine, endChar) &&
           !HighlightStore::findHighlightBounds(*page, hl.text, HighlightStore::HighlightPageRole::END, startLine,
                                                startChar, endLine, endChar))
