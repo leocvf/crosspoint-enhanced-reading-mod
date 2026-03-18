@@ -1,0 +1,73 @@
+# Changelog
+
+## v2.5.2 — Highlight UX Overhaul
+
+### Improvements
+
+- **Single-tap Power advances by sentence**: In select mode, tapping Power now moves to the next sentence (dropping the previous), instead of extending the selection. This makes it natural to read through a passage sentence-by-sentence and save the one you want.
+- **Page render caching**: Cursor moves within the same page now skip full-page text rendering (~100-200ms savings per keypress). The clean page is cached on first render and restored from memory on subsequent cursor moves.
+- **Cleaner highlight output**: The highlight file on SD card no longer shows internal reference IDs. Each entry shows chapter, page, progress %, and the highlighted text, separated by blank lines.
+- **Updated help overlay**: The on-screen cheat sheet (hold Menu) now documents the sentence-advance and selection-extend controls.
+
+### Bug Fixes
+
+- Fixed: Each Power tap in select mode was accumulating sentences instead of advancing — now correctly highlights one sentence at a time.
+
+---
+
+## v2.5.1 — Faster Highlight Navigation
+
+### Performance
+
+- **Highlight cursor speed**: Line-to-line navigation in highlight mode now uses a 4-frame A2-like BW waveform (`lut_bw_fast`) instead of the OTP FAST_REFRESH waveform (~12 frames). Cuts per-keypress display latency by roughly 3×. Some additional ghosting on unchanged pixels is expected and acceptable during active cursor movement; the next page turn clears it.
+- **Anti-aliasing already skipped in highlight mode** — confirmed in code; the BW fast path is used end-to-end for all highlight cursor updates.
+
+---
+
+## v2.5.0 — Sentence Highlighting
+
+This is a major feature release. Sentence highlighting is one of the most-requested features, and it now works reliably across page boundaries.
+
+### New Features
+
+- **Sentence Highlight Mode** — Press Power (short tap) while reading to enter Cursor mode. Navigate to a sentence with Up/Down, then tap Power again to select the full sentence. The selection is highlighted and saved to the SD card.
+- **Persistent Highlights** — Saved highlights survive power cycles and appear every time you open that book. Stored per-book in a companion `.highlights` file on the SD card.
+- **Cross-Page Highlights** — Sentences that span a page boundary are handled correctly: the reader auto-turns to show the anchor, and the highlight renders across both pages.
+- **Dark Mode Support** — Highlights render correctly in both light and dark mode.
+
+### Controls (Highlight Mode)
+
+| Action | Button |
+|---|---|
+| Enter Cursor mode | Short Power tap while reading |
+| Move cursor up/down | Up / Down |
+| Select sentence at cursor | Short Power tap |
+| Extend selection forward (one sentence) | Down |
+| Shrink selection (one line) | Up |
+| Fine-adjust start word left/right | Back / Confirm |
+| Save highlight | Double-tap Power |
+| Delete highlight at cursor | Double-tap Power (in Cursor mode, over saved highlight) |
+| Cancel / exit Highlight mode | Long-press Back |
+
+### Bug Fixes
+
+- Fixed: Down arrow was advancing the selection by up to 3 sentences per press — now strictly advances one sentence at a time.
+- Fixed: Cross-page backward sentence detection — cursor at the top line of a page now correctly locates the sentence start on the previous page.
+- Fixed: Word outline bleed — earlier builds highlighted the full line width; now only the words within the sentence boundaries are inverted.
+- Fixed: Page-jump on Down — selection end no longer jumps multiple pages in a single press.
+- Fixed: Gray background flash on boot (cosmetic fix, full-waveform refresh on startup).
+
+### Performance
+
+- Anti-aliasing is disabled during active highlight mode for faster rendering and snappier navigation.
+
+---
+
+## v2.0.0 — Enhanced Reading Mod (initial release)
+
+- Full button remapping in **Full Mod** mode: single-click resize, hold for line spacing, double-click for alignment and bold, hold-right for rotation, double-click Back for dark mode
+- **Simple Mode** option for text-size-only access
+- Portrait and landscape button swap options
+- Hardware Bold toggle (loads native bold font files)
+- Anti-aliased text rendering with corrected grayscale
+- On-screen control guide (hold menu button)

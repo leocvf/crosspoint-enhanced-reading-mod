@@ -2150,9 +2150,10 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
                   "HIGHLIGHT MODE\n"
                   "2x Pwr: Enter/Save\n"
                   "Up/Down: Move cursor\n"
-                  "1x Pwr: Select / Remove\n"
-                  "L rocker: Adjust start\n"
-                  "R rocker: Adjust end\n"
+                  "1x Pwr: Select sentence\n"
+                  "1x Pwr: Next sentence\n"
+                  "Down: Extend selection\n"
+                  "L/R rocker: Fine adjust\n"
                   "Hold Back: Cancel",
                   BoxAlign::CENTER, overlayFontId, overlayLineHeight);
     }

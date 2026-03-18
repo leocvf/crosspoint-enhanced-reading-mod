@@ -47,9 +47,9 @@ bool ensureDir();
  * @param highlightedText The extracted text of the highlight
  * @return true on success
  */
-bool saveHighlight(const std::string& title, const std::string& author, int spineIndex,
-                   const std::string& chapterName, int startPage, int endPage, int totalPages,
-                   float progressPercent, const std::string& highlightedText);
+bool saveHighlight(const std::string& title, const std::string& author, int spineIndex, const std::string& chapterName,
+                   int startPage, int endPage, int totalPages, float progressPercent,
+                   const std::string& highlightedText);
 
 /**
  * Find the precise bounds of a saved highlight on a page.
@@ -59,16 +59,21 @@ bool saveHighlight(const std::string& title, const std::string& author, int spin
  * outEndChar is one-past the last character of the last word (-1 = full line).
  * Returns false if no match found.
  */
-bool findHighlightBounds(const Page& page, const std::string& text,
-                         HighlightPageRole role,
-                         int& outStartLine, int& outStartChar,
-                         int& outEndLine, int& outEndChar);
+bool findHighlightBounds(const Page& page, const std::string& text, HighlightPageRole role, int& outStartLine,
+                         int& outStartChar, int& outEndLine, int& outEndChar);
 
 /**
  * Load highlights for a specific page of a book.
  * Reads all .txt files in /highlights/ and returns those matching title+spineIndex+page.
  */
 std::vector<SavedHighlight> loadHighlightsForPage(const std::string& title, int spineIndex, int page);
+
+/**
+ * Delete a specific saved highlight from the book's highlight file.
+ * Identified by spineIndex + startPage + endPage (matches the stored Ref: line).
+ * Returns true if the highlight was found and removed.
+ */
+bool deleteHighlight(const std::string& title, int spineIndex, int startPage, int endPage);
 
 /**
  * Count the number of text lines (PageLine elements) on a page.
@@ -84,15 +89,13 @@ std::string getLineText(const Page& page, int textLineIndex);
  * Get the Y position and height of a text line for rendering overlays.
  * Returns false if the line index is out of range.
  */
-bool getLineGeometry(const Page& page, int fontId, int textLineIndex,
-                     int16_t& outY, int16_t& outHeight);
+bool getLineGeometry(const Page& page, int fontId, int textLineIndex, int16_t& outY, int16_t& outHeight);
 
 /**
  * Get the leftmost X position and rightmost extent of a text line.
  * Returns false if the line index is out of range.
  */
-bool getLineXExtent(const Page& page, int fontId, int textLineIndex,
-                    int16_t& outXStart, int16_t& outXEnd);
+bool getLineXExtent(const Page& page, int fontId, int textLineIndex, int16_t& outXStart, int16_t& outXEnd);
 
 /**
  * Extract highlighted text from page elements given a selection range.

@@ -47,8 +47,7 @@ std::string getLineText(const Page& page, int textLineIndex) {
   return result;
 }
 
-bool getLineGeometry(const Page& page, int fontId, int textLineIndex,
-                     int16_t& outY, int16_t& outHeight) {
+bool getLineGeometry(const Page& page, int fontId, int textLineIndex, int16_t& outY, int16_t& outHeight) {
   auto lines = getTextLines(page);
   if (textLineIndex < 0 || textLineIndex >= static_cast<int>(lines.size())) return false;
 
@@ -69,8 +68,7 @@ bool getLineGeometry(const Page& page, int fontId, int textLineIndex,
   return true;
 }
 
-bool getLineXExtent(const Page& page, int fontId, int textLineIndex,
-                    int16_t& outXStart, int16_t& outXEnd) {
+bool getLineXExtent(const Page& page, int fontId, int textLineIndex, int16_t& outXStart, int16_t& outXEnd) {
   auto lines = getTextLines(page);
   if (textLineIndex < 0 || textLineIndex >= static_cast<int>(lines.size())) return false;
 
@@ -151,7 +149,8 @@ std::string extractText(const Page& page, int startLine, int startChar, int endL
     if (i == startLine && i == endLine) {
       // Single line selection
       int start = std::max(0, startChar);
-      int end = (endChar == -1) ? static_cast<int>(lineText.size()) : std::min(endChar, static_cast<int>(lineText.size()));
+      int end =
+          (endChar == -1) ? static_cast<int>(lineText.size()) : std::min(endChar, static_cast<int>(lineText.size()));
       if (start < end) {
         result += lineText.substr(start, end - start);
       }
@@ -161,7 +160,8 @@ std::string extractText(const Page& page, int startLine, int startChar, int endL
         result += lineText.substr(start);
       }
     } else if (i == endLine) {
-      int end = (endChar == -1) ? static_cast<int>(lineText.size()) : std::min(endChar, static_cast<int>(lineText.size()));
+      int end =
+          (endChar == -1) ? static_cast<int>(lineText.size()) : std::min(endChar, static_cast<int>(lineText.size()));
       if (end > 0) {
         if (!result.empty()) result += ' ';
         result += lineText.substr(0, end);
@@ -183,11 +183,14 @@ static std::string bookFilePath(const std::string& title) {
 }
 
 // Delimiter between highlight entries in the per-book file
-static constexpr const char* HIGHLIGHT_DELIM = "=== HIGHLIGHT ===";
+// Old format: "=== HIGHLIGHT ===" with separate "Ref: N.S-E" line
+// New format: "=== HIGHLIGHT [N.S-E] ===" with ref embedded in delimiter
+static constexpr const char* HIGHLIGHT_DELIM_OLD = "=== HIGHLIGHT ===";
+static constexpr const char* HIGHLIGHT_DELIM_PREFIX = "=== HIGHLIGHT [";
 
-bool saveHighlight(const std::string& title, const std::string& author, int spineIndex,
-                   const std::string& chapterName, int startPage, int endPage, int totalPages,
-                   float progressPercent, const std::string& highlightedText) {
+bool saveHighlight(const std::string& title, const std::string& author, int spineIndex, const std::string& chapterName,
+                   int startPage, int endPage, int totalPages, float progressPercent,
+                   const std::string& highlightedText) {
   if (!ensureDir()) {
     LOG_ERR("HLS", "Failed to create highlights directory");
     return false;
@@ -205,18 +208,15 @@ bool saveHighlight(const std::string& title, const std::string& author, int spin
   }
 
   // Build the new highlight block — human-readable format
-  // Internal ref (spine index + 0-indexed page) is stored compactly for the parser
+  // Internal ref is embedded in the delimiter line for parser use (not visually prominent)
   String newBlock;
-  newBlock += HIGHLIGHT_DELIM;
-  newBlock += "\n";
-  // Internal ref: spine.startPage-endPage (endPage == startPage for single-page highlights)
-  newBlock += "Ref: ";
+  newBlock += "=== HIGHLIGHT [";
   newBlock += String(spineIndex);
   newBlock += ".";
   newBlock += String(startPage);
   newBlock += "-";
   newBlock += String(endPage);
-  newBlock += "\n";
+  newBlock += "] ===\n";
   newBlock += chapterDisplay;
   newBlock += " | Page ";
   newBlock += String(startPage + 1);
@@ -270,28 +270,71 @@ std::vector<SavedHighlight> loadHighlightsForPage(const std::string& title, int 
   }
 
   std::string content(raw.c_str());
-  const std::string delim = std::string(HIGHLIGHT_DELIM) + "\n";
+  const std::string delimPrefix = std::string(HIGHLIGHT_DELIM_PREFIX);
+  const std::string delimOld = std::string(HIGHLIGHT_DELIM_OLD) + "\n";
 
-  // Split content on the delimiter to get individual highlight blocks
+  // Split content on highlight delimiter lines (supports old and new format)
   size_t searchPos = 0;
   while (true) {
-    size_t delimPos = content.find(delim, searchPos);
-    if (delimPos == std::string::npos) break;
+    // Find next highlight block — try new format first, then old
+    size_t delimPos = content.find(delimPrefix, searchPos);
+    size_t delimOldPos = content.find(delimOld, searchPos);
+    bool isNewFormat;
 
-    size_t blockStart = delimPos + delim.size();
-    size_t nextDelim = content.find(delim, blockStart);
-    std::string block = (nextDelim == std::string::npos)
-                            ? content.substr(blockStart)
-                            : content.substr(blockStart, nextDelim - blockStart);
+    if (delimPos == std::string::npos && delimOldPos == std::string::npos) break;
+    if (delimPos == std::string::npos) {
+      delimPos = delimOldPos;
+      isNewFormat = false;
+    } else if (delimOldPos == std::string::npos) {
+      isNewFormat = true;
+    } else {
+      isNewFormat = (delimPos <= delimOldPos);
+      if (!isNewFormat) delimPos = delimOldPos;
+    }
+
+    // Find end of delimiter line
+    size_t delimLineEnd = content.find('\n', delimPos);
+    if (delimLineEnd == std::string::npos) break;
+    size_t blockStart = delimLineEnd + 1;
+
+    // Find the next delimiter (either format) for block boundary
+    size_t nextNew = content.find(delimPrefix, blockStart);
+    size_t nextOld = content.find(delimOld, blockStart);
+    size_t nextDelim = std::string::npos;
+    if (nextNew != std::string::npos) nextDelim = nextNew;
+    if (nextOld != std::string::npos && nextOld < nextDelim) nextDelim = nextOld;
+
+    std::string block = (nextDelim == std::string::npos) ? content.substr(blockStart)
+                                                         : content.substr(blockStart, nextDelim - blockStart);
 
     searchPos = blockStart;
 
-    // Parse the block — "Ref: spine.startPage-endPage" gives the internal anchor
     int parsedSpine = -1;
     int parsedStartPage = -1;
     int parsedEndPage = -1;
     std::string parsedText;
-    bool inText = false;  // true once we've passed the header line(s) and blank line
+    bool inText = false;
+
+    // New format: parse ref from delimiter line "=== HIGHLIGHT [N.S-E] ==="
+    if (isNewFormat) {
+      size_t bracketStart = content.find('[', delimPos);
+      size_t bracketEnd = content.find(']', delimPos);
+      if (bracketStart != std::string::npos && bracketEnd != std::string::npos && bracketEnd > bracketStart) {
+        std::string ref = content.substr(bracketStart + 1, bracketEnd - bracketStart - 1);
+        size_t dotPos = ref.find('.');
+        if (dotPos != std::string::npos) {
+          parsedSpine = atoi(ref.substr(0, dotPos).c_str());
+          size_t dashPos = ref.find('-', dotPos + 1);
+          if (dashPos != std::string::npos) {
+            parsedStartPage = atoi(ref.substr(dotPos + 1, dashPos - dotPos - 1).c_str());
+            parsedEndPage = atoi(ref.substr(dashPos + 1).c_str());
+          } else {
+            parsedStartPage = atoi(ref.substr(dotPos + 1).c_str());
+            parsedEndPage = parsedStartPage;
+          }
+        }
+      }
+    }
 
     size_t pos = 0;
     int headerLinesRead = 0;
@@ -301,9 +344,8 @@ std::vector<SavedHighlight> loadHighlightsForPage(const std::string& title, int 
       std::string line = block.substr(pos, eol - pos);
       pos = eol + 1;
 
-      // "Ref: N.S-E" is the internal anchor (spine, startPage, endPage)
-      // Legacy format "Ref: N.P" (no dash) treated as single-page
-      if (line.rfind("Ref: ", 0) == 0) {
+      // Old format: "Ref: N.S-E" as a separate line
+      if (!isNewFormat && line.rfind("Ref: ", 0) == 0) {
         size_t dotPos = line.find('.', 5);
         if (dotPos != std::string::npos) {
           parsedSpine = atoi(line.substr(5, dotPos - 5).c_str());
@@ -327,7 +369,7 @@ std::vector<SavedHighlight> loadHighlightsForPage(const std::string& title, int 
       }
 
       // Blank line after header signals start of text
-      if (!inText && line.empty() && headerLinesRead >= 1) {
+      if (!inText && line.empty() && headerLinesRead >= 0) {
         inText = true;
         continue;
       }
@@ -357,18 +399,18 @@ std::vector<SavedHighlight> loadHighlightsForPage(const std::string& title, int 
   return results;
 }
 
-bool findHighlightBounds(const Page& page, const std::string& text,
-                         HighlightPageRole role,
-                         int& outStartLine, int& outStartChar,
-                         int& outEndLine, int& outEndChar) {
+bool findHighlightBounds(const Page& page, const std::string& text, HighlightPageRole role, int& outStartLine,
+                         int& outStartChar, int& outEndLine, int& outEndChar) {
   auto lines = getTextLines(page);
   if (lines.empty() || text.empty()) return false;
   const int lineCount = static_cast<int>(lines.size());
 
   // MIDDLE: entire page is highlighted
   if (role == HighlightPageRole::MIDDLE) {
-    outStartLine = 0; outStartChar = 0;
-    outEndLine = lineCount - 1; outEndChar = -1;
+    outStartLine = 0;
+    outStartChar = 0;
+    outEndLine = lineCount - 1;
+    outEndChar = -1;
     return true;
   }
 
@@ -394,7 +436,11 @@ bool findHighlightBounds(const Page& page, const std::string& text,
       const auto& words = lines[i]->getBlock()->getWords();
       int charOff = 0;
       for (const auto& w : words) {
-        if (w == firstWord) { startLine = i; startChar = charOff; break; }
+        if (w == firstWord) {
+          startLine = i;
+          startChar = charOff;
+          break;
+        }
         charOff += static_cast<int>(w.size()) + 1;
       }
       if (startLine >= 0) break;
@@ -413,9 +459,16 @@ bool findHighlightBounds(const Page& page, const std::string& text,
         if (w == lastWord) lastMatchEnd = charOff + static_cast<int>(w.size());
         charOff += static_cast<int>(w.size()) + 1;
       }
-      if (lastMatchEnd >= 0) { endLine = i; endChar = lastMatchEnd; break; }
+      if (lastMatchEnd >= 0) {
+        endLine = i;
+        endChar = lastMatchEnd;
+        break;
+      }
     }
-    if (endLine < 0) { endLine = startLine; endChar = -1; }
+    if (endLine < 0) {
+      endLine = startLine;
+      endChar = -1;
+    }
   }
 
   outStartLine = startLine;
@@ -423,6 +476,68 @@ bool findHighlightBounds(const Page& page, const std::string& text,
   outEndLine = endLine;
   outEndChar = endChar;
   return true;
+}
+
+bool deleteHighlight(const std::string& title, int spineIndex, int startPage, int endPage) {
+  std::string filePath = bookFilePath(title);
+  String raw = Storage.readFile(filePath.c_str());
+  if (raw.length() == 0) return false;
+
+  std::string content(raw.c_str());
+
+  // Build ref patterns for both old and new format
+  char refNewBuf[64];
+  snprintf(refNewBuf, sizeof(refNewBuf), "[%d.%d-%d]", spineIndex, startPage, endPage);
+  const std::string refNew(refNewBuf);
+  char refOldBuf[64];
+  snprintf(refOldBuf, sizeof(refOldBuf), "Ref: %d.%d-%d\n", spineIndex, startPage, endPage);
+  const std::string refOld(refOldBuf);
+
+  // Scan for highlight blocks and remove the matching one
+  // Look for either delimiter format
+  size_t searchPos = 0;
+  while (true) {
+    size_t newPos = content.find(HIGHLIGHT_DELIM_PREFIX, searchPos);
+    size_t oldPos = content.find(std::string(HIGHLIGHT_DELIM_OLD) + "\n", searchPos);
+    size_t delimPos;
+    if (newPos == std::string::npos && oldPos == std::string::npos) break;
+    if (newPos == std::string::npos)
+      delimPos = oldPos;
+    else if (oldPos == std::string::npos)
+      delimPos = newPos;
+    else
+      delimPos = std::min(newPos, oldPos);
+
+    // Find end of this block (next delimiter of either type)
+    size_t delimLineEnd = content.find('\n', delimPos);
+    if (delimLineEnd == std::string::npos) break;
+    size_t blockContentStart = delimLineEnd + 1;
+
+    size_t nextNew = content.find(HIGHLIGHT_DELIM_PREFIX, blockContentStart);
+    size_t nextOld = content.find(std::string(HIGHLIGHT_DELIM_OLD) + "\n", blockContentStart);
+    size_t blockEnd = std::string::npos;
+    if (nextNew != std::string::npos) blockEnd = nextNew;
+    if (nextOld != std::string::npos && nextOld < blockEnd) blockEnd = nextOld;
+    if (blockEnd == std::string::npos) blockEnd = content.size();
+
+    // Check if this block's delimiter line or content contains our ref
+    std::string delimLine = content.substr(delimPos, delimLineEnd - delimPos);
+    std::string blockContent = content.substr(blockContentStart, blockEnd - blockContentStart);
+    if (delimLine.find(refNew) != std::string::npos || blockContent.find(refOld) != std::string::npos) {
+      std::string newContent = content.substr(0, delimPos) + content.substr(blockEnd);
+      if (!Storage.writeFile(filePath.c_str(), String(newContent.c_str()))) {
+        LOG_ERR("HLS", "Failed to write highlights file after delete");
+        return false;
+      }
+      LOG_DBG("HLS", "Deleted highlight %d.%d-%d from %s", spineIndex, startPage, endPage, filePath.c_str());
+      return true;
+    }
+
+    searchPos = blockContentStart;
+  }
+
+  LOG_ERR("HLS", "deleteHighlight: no match for %d.%d-%d", spineIndex, startPage, endPage);
+  return false;
 }
 
 }  // namespace HighlightStore

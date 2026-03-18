@@ -19,7 +19,7 @@ void BootActivity::onEnter() {
                             EpdFontFamily::BOLD);
   renderer.drawCenteredText(SMALL_FONT_ID, pageHeight / 2 + 95, tr(STR_BOOTING));
   // Custom Version Number
-  renderer.drawCenteredText(SMALL_FONT_ID, pageHeight - 30, "ztrawhcs version 2.0.0");
+  renderer.drawCenteredText(SMALL_FONT_ID, pageHeight - 30, "ztrawhcs version 2.5.0");
   // Use FULL_REFRESH on first boot: the HALF_REFRESH waveform (used when screen power is off)
   // fakes a high temperature (0x5A) to shorten pulse timing. At actual room temperature this
   // under-drives the E Ink particles, leaving residual charge that appears as a ~5% gray tint

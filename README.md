@@ -23,6 +23,39 @@ If you ever need a reminder of the controls, just **hold the menu button** for a
 
 > **Simple Mode:** If you'd prefer a pared-down experience, a menu option lets you switch to Simple mode — quick access to text size only, with no risk of accidental formatting changes.
 
+## Sentence Highlighting *(v2.5.0)*
+
+You can highlight individual sentences and save them to your device's SD card. Highlights are persistent — they reappear every time you open the book, and they work across page boundaries in both light and dark mode.
+
+### How It Works
+
+Highlighting is a three-step process: **enter cursor mode → select a sentence → save it.**
+
+**Step 1 — Enter Cursor Mode**
+- **Double-tap the Power button** while reading. A dark border appears around the page and a highlight bar appears on the first line. You're now in Cursor mode.
+
+**Step 2 — Select a Sentence**
+- Use **Up/Down** to move the cursor bar to the line containing the sentence you want.
+- **Single-tap Power** to select the full sentence at the cursor. The firmware automatically detects sentence boundaries (periods, exclamation marks, question marks) and highlights from the start to the end of the sentence, even if it spans multiple lines.
+
+**Step 3 — Navigate and Save**
+- **Single-tap Power** again to advance to the **next sentence**. Each tap moves the highlight forward by exactly one sentence — useful for reading through a passage and deciding what to save.
+- **Down** extends the selection to include one more sentence (additive).
+- **Up** shrinks the selection by one line.
+- Use the **left rocker** (Back/Confirm) to fine-adjust the start position word by word.
+- Use the **right rocker** (Left/Right) to fine-adjust the end position word by word.
+- **Double-tap Power** to **save** the highlight. It's written to a text file on the SD card at `/highlights/`.
+
+**Canceling and Deleting**
+- **Long-press Back** at any point to cancel and return to normal reading.
+- To **delete** a saved highlight: enter Cursor mode, move the cursor onto a highlighted line, and **double-tap Power**. You'll see "Highlight Removed."
+
+**Cheat Sheet:** Hold the Menu button for an on-screen guide showing all highlight controls.
+
+### Highlight Output
+
+Saved highlights are stored as human-readable text files on the SD card in the `/highlights/` directory, one file per book. Each highlight entry shows the chapter name, page number, book progress percentage, and the highlighted text.
+
 ## Additional Features
 
 - **Portrait button swap** — Choose whether the front or side buttons handle page turns when reading in portrait
