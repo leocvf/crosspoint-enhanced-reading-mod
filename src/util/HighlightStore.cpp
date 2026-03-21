@@ -12,6 +12,32 @@ namespace HighlightStore {
 
 bool ensureDir() { return Storage.ensureDirectoryExists(HIGHLIGHT_DIR); }
 
+static bool ensureImagesDir() { return Storage.ensureDirectoryExists(HIGHLIGHT_IMAGES_DIR); }
+
+// Copy a file from srcPath to destPath on the SD card in 512-byte chunks.
+// Returns true on success, false on any I/O error.
+static bool copyFile(const char* srcPath, const char* destPath) {
+  FsFile src, dest;
+  if (!Storage.openFileForRead("HLS", srcPath, src)) return false;
+  if (!Storage.openFileForWrite("HLS", destPath, dest)) {
+    src.close();
+    return false;
+  }
+  const size_t CHUNK = 512;
+  uint8_t buf[CHUNK];
+  size_t bytesRead;
+  bool ok = true;
+  while ((bytesRead = src.read(buf, CHUNK)) > 0) {
+    if (dest.write(buf, bytesRead) != bytesRead) {
+      ok = false;
+      break;
+    }
+  }
+  src.close();
+  dest.close();
+  return ok;
+}
+
 // --- Step 6: Text extraction helpers ---
 
 // Internal: collect pointers to all PageLine elements (text lines only)
@@ -190,7 +216,7 @@ static constexpr const char* HIGHLIGHT_DELIM_PREFIX = "=== HIGHLIGHT [";
 
 bool saveHighlight(const std::string& title, const std::string& author, int spineIndex, const std::string& chapterName,
                    int startPage, int endPage, int totalPages, float progressPercent,
-                   const std::string& highlightedText) {
+                   const std::string& highlightedText, const std::vector<std::string>& imagePaths) {
   if (!ensureDir()) {
     LOG_ERR("HLS", "Failed to create highlights directory");
     return false;
@@ -257,6 +283,34 @@ bool saveHighlight(const std::string& title, const std::string& author, int spin
   }
 
   LOG_DBG("HLS", "Highlight appended to %s (%d bytes total)", filePath.c_str(), content.length());
+
+  // Copy any images from an image-page highlight to /highlights/images/
+  // Uses a predictable filename: {sanitizedTitle}-s{spine}-p{startPage}-img{N}.{ext}
+  if (!imagePaths.empty()) {
+    if (!ensureImagesDir()) {
+      LOG_ERR("HLS", "Failed to create highlighted images directory");
+    } else {
+      std::string baseName = StringUtils::sanitizeFilename(title, 30);
+      int imgIdx = 0;
+      for (const auto& srcPath : imagePaths) {
+        // Preserve original file extension
+        std::string ext;
+        size_t dotPos = srcPath.rfind('.');
+        if (dotPos != std::string::npos) ext = srcPath.substr(dotPos);  // includes "."
+
+        char destName[128];
+        snprintf(destName, sizeof(destName), "%s/%s-s%d-p%d-img%d%s", HIGHLIGHT_IMAGES_DIR, baseName.c_str(),
+                 spineIndex, startPage, imgIdx, ext.c_str());
+        if (copyFile(srcPath.c_str(), destName)) {
+          LOG_DBG("HLS", "Saved highlighted image: %s", destName);
+        } else {
+          LOG_ERR("HLS", "Failed to copy image %s -> %s", srcPath.c_str(), destName);
+        }
+        imgIdx++;
+      }
+    }
+  }
+
   return true;
 }
 

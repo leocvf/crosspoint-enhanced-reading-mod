@@ -12,6 +12,8 @@ namespace HighlightStore {
 
 // Directory where highlights are saved on SD card
 constexpr const char* HIGHLIGHT_DIR = "/highlights";
+// Sub-directory for images captured from highlighted image pages
+constexpr const char* HIGHLIGHT_IMAGES_DIR = "/highlights/images";
 
 struct SavedHighlight {
   int spineIndex;
@@ -49,7 +51,8 @@ bool ensureDir();
  */
 bool saveHighlight(const std::string& title, const std::string& author, int spineIndex, const std::string& chapterName,
                    int startPage, int endPage, int totalPages, float progressPercent,
-                   const std::string& highlightedText);
+                   const std::string& highlightedText,
+                   const std::vector<std::string>& imagePaths = {});
 
 /**
  * Find the precise bounds of a saved highlight on a page.

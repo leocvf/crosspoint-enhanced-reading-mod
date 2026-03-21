@@ -414,6 +414,7 @@ void EpubReaderActivity::loop() {
           RenderLock lock(*this);
           // Extract highlighted text — may span two pages
           std::string extractedText;
+          std::vector<std::string> highlightImagePaths;  // images from highlighted page(s)
           // BUGFIX: use selectionStartPage, not section->currentPage — currentPage may have been
           // auto-turned to selectionEndPage by single-tap Power navigation during selection.
           int startPageIdx = (highlightState.selectionStartPage >= 0) ? highlightState.selectionStartPage
@@ -452,6 +453,13 @@ void EpubReaderActivity::loop() {
                   }
                 }
               }
+              // Collect images from the start page for /highlights/images/ saving
+              for (const auto& el : startPageObj->elements) {
+                if (el->getTag() == TAG_PageImage) {
+                  const auto& pi = static_cast<const PageImage&>(*el);
+                  highlightImagePaths.push_back(pi.getImageBlock().getImagePath());
+                }
+              }
             }
           }
           if (extractedText.empty()) extractedText = "[no text extracted]";
@@ -469,7 +477,7 @@ void EpubReaderActivity::loop() {
 
           HighlightStore::saveHighlight(epub->getTitle(), epub->getAuthor(), currentSpineIndex, chapterName,
                                         startPageIdx, endPageIdx, section ? section->pageCount : 0, bookProgress,
-                                        extractedText);
+                                        extractedText, highlightImagePaths);
 
           highlightState.reset();
           highlightCachedPage = -1;
@@ -2304,8 +2312,10 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   // --- STANDARD or IMAGE REFRESH ---
   // In highlight mode, use displayHighlightBuffer() (lut_bw_fast: 4-frame A2-like LUT, ~3× faster
   // than OTP FAST_REFRESH) — the overlay is BW-only so grayscale quality doesn't matter.
-  if (imagePageWithAA) {
+  if (imagePageWithAA && !inHighlightMode) {
     // Double FAST_REFRESH with selective image blanking (pablohc's technique):
+    // Skipped in highlight mode — re-rendering the page would clobber the highlight overlay.
+    // The displayHighlightBuffer() path below handles image pages correctly in highlight mode.
     // HALF_REFRESH sets particles too firmly for the grayscale LUT to adjust.
     // Instead, blank only the image area and do two fast refreshes.
     // Step 1: Display page with image area blanked (text appears, image area white)
@@ -2315,8 +2325,13 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
       renderer.fillRect(imgX + orientedMarginLeft, imgY + orientedMarginTop, imgW, imgH, false);
       renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 
-      // Re-render page content to restore images into the blanked area
+      // Re-render page content to restore images into the blanked area.
+      // Must match the bold state from the initial render — otherwise Step 1 (FAST_REFRESH
+      // with bold text) and Step 2 (FAST_REFRESH with non-bold text) disagree on glyph
+      // widths/positions, causing the text to ghost over itself in a "double vision" effect.
+      EpdFontFamily::globalForceBold = useBold;
       page->render(renderer, SETTINGS.getReaderFontId(), orientedMarginLeft, orientedMarginTop);
+      EpdFontFamily::globalForceBold = false;
       renderStatusBar(orientedMarginRight, orientedMarginBottom, orientedMarginLeft);
       renderer.displayBuffer(HalDisplay::FAST_REFRESH);
     } else {
