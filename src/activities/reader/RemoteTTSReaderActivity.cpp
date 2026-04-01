@@ -95,7 +95,12 @@ void RemoteTTSReaderActivity::loop() {
   }
 
   if (state.textDirty || state.highlightDirty) {
-    requestUpdate();
+    const unsigned long now = millis();
+    const bool onlyHighlightDirty = state.highlightDirty && !state.textDirty;
+    const unsigned long minRenderIntervalMs = onlyHighlightDirty ? RENDER_COALESCE_MS : 40;
+    if ((now - lastRenderMs) >= minRenderIntervalMs) {
+      requestUpdate();
+    }
   }
 }
 
@@ -115,8 +120,10 @@ void RemoteTTSReaderActivity::render(Activity::RenderLock&&) {
   const BluetoothManager& bt = BluetoothManager::instance();
   const char* bleState = bt.isConnected() ? "Connected" : (bt.isAdvertising() ? "Advertising" : "Stopped");
   int statusY = 20;
+  const int bodyLineHeight = renderer.getLineHeight(UI_10_FONT_ID) + 2;
+  int statusLineBudget = 7;
   auto drawWrappedSmall = [&](const std::string& text) {
-    if (text.empty()) {
+    if (text.empty() || statusLineBudget <= 0) {
       return;
     }
 
@@ -135,8 +142,12 @@ void RemoteTTSReaderActivity::render(Activity::RenderLock&&) {
       const bool fits = renderer.getTextWidth(SMALL_FONT_ID, candidate.c_str()) <= contentWidth;
 
       if (!line.empty() && !fits) {
+        if (statusLineBudget <= 0) {
+          return;
+        }
         renderer.drawText(SMALL_FONT_ID, margin, statusY, line.c_str(), true);
         statusY += smallLineHeight;
+        statusLineBudget--;
         line = word;
       } else {
         line = candidate;
@@ -145,9 +156,10 @@ void RemoteTTSReaderActivity::render(Activity::RenderLock&&) {
       idx = wordEnd;
     }
 
-    if (!line.empty()) {
+    if (!line.empty() && statusLineBudget > 0) {
       renderer.drawText(SMALL_FONT_ID, margin, statusY, line.c_str(), true);
       statusY += smallLineHeight;
+      statusLineBudget--;
     }
   };
 
@@ -160,15 +172,19 @@ void RemoteTTSReaderActivity::render(Activity::RenderLock&&) {
   } else if (!bt.getLastError().empty()) {
     drawWrappedSmall(bt.getLastError());
   }
-  drawWrappedSmall(std::string("Commands: ") + std::to_string(commandCount));
-  drawWrappedSmall(std::string("Last cmd: ") + lastCommandSummary);
-  drawWrappedSmall("Chunks rx/dup/gap: " + std::to_string(stats.chunksReceived) + "/" +
-                   std::to_string(stats.duplicateChunks) + "/" + std::to_string(stats.gapEvents));
-  drawWrappedSmall("Highlight misses: " + std::to_string(stats.highlightMisses));
+  drawWrappedSmall("Cmds: " + std::to_string(commandCount) + "  Last: " + lastCommandSummary);
+  drawWrappedSmall("Chunks " + std::to_string(stats.chunksReceived) + "/" +
+                   std::to_string(stats.duplicateChunks) + "/" + std::to_string(stats.gapEvents) +
+                   "  Miss: " + std::to_string(stats.highlightMisses));
 
+  const int minTextLines = 3;
+  const int maxStatusBottom = (screenHeight - 18) - (minTextLines * bodyLineHeight) - 6;
+  if (statusY > maxStatusBottom) {
+    statusY = std::max(20, maxStatusBottom);
+  }
   const int startY = statusY + 6;
 
-  const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID) + 2;
+  const int lineHeight = bodyLineHeight;
   const int availableHeight = (screenHeight - 18) - startY;
   const int maxVisibleLines = std::max(1, availableHeight / lineHeight);
 
@@ -328,7 +344,6 @@ void RemoteTTSReaderActivity::handleCommand(const JsonDocument& doc) {
       viewportFirstLine = 0;
     }
     LOG_INF("RTTS", "Updated position %d-%d", start, end);
-    setDebugMessage("Position updated", (std::to_string(start) + "-" + std::to_string(end)).c_str());
     return;
   }
 
@@ -749,5 +764,4 @@ void RemoteTTSReaderActivity::setDebugMessage(const std::string& line1, const st
   debugLine1 = line1;
   debugLine2 = line2;
   state.highlightDirty = true;
-  requestUpdate();
 }
