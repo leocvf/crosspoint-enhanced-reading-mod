@@ -5,6 +5,7 @@
 - BLE transport manager for receiving UTF-8 JSON writes.
 - JSON command handling for `ping`, `clear`, `load_text`, and `position`.
 - Plain-text wrapped rendering with active-range highlighting.
+- BLE pairing requirement with a fixed passkey (`123456`) before command writes are accepted.
 
 ## Files changed
 - `lib/hal/RemoteTTSConstants.h`
@@ -20,6 +21,7 @@
 
 ## Protocol summary
 Packets are UTF-8 JSON written to `X4_TTS_COMMAND_CHARACTERISTIC_UUID`.
+The command characteristic now requires encrypted writes, so pair first.
 
 Supported commands:
 - `{"type":"ping"}`
@@ -42,6 +44,7 @@ Both live in `lib/hal/RemoteTTSConstants.h` and are placeholders.
 ## BLE adaptation notes
 - The generalized transport in `lib/hal/BluetoothManager.*` was adapted from the BLE fork's `BluetoothHIDManager` lifecycle approach (centralized manager, callback-driven events, explicit start/stop behavior).
 - During adaptation, WiFi/BLE coexistence handling and NimBLE init tuning (power/PHY/security) were carried over in simplified form for Remote TTS server use.
+- Pairing/passkey behavior now mirrors the reference project's secure-auth direction (`setSecurityAuth(true, false, true)`), adapted for GATT server mode.
 
 ## HID-specific pieces intentionally not reused
 - HID report maps

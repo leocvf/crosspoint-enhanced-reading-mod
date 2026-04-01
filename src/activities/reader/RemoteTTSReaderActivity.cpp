@@ -7,6 +7,7 @@
 
 #include "fontIds.h"
 #include <BluetoothManager.h>
+#include <RemoteTTSConstants.h>
 
 void RemoteTTSReaderActivity::onEnter() {
   Activity::onEnter();
@@ -20,7 +21,7 @@ void RemoteTTSReaderActivity::onEnter() {
     LOG_ERR("RTTS", "BluetoothManager failed to start");
     setDebugMessage("BLE start failed", BluetoothManager::instance().getLastError());
   } else {
-    setDebugMessage("BLE advertising", "Use Android BLE client to write JSON");
+    setDebugMessage("BLE advertising", "Pair code " + std::to_string(X4_TTS_PAIRING_PASSKEY));
   }
   lastConnectedState = BluetoothManager::instance().isConnected();
   lastAdvertisingState = BluetoothManager::instance().isAdvertising();
@@ -43,14 +44,14 @@ void RemoteTTSReaderActivity::loop() {
     if (connected) {
       setDebugMessage("BLE connected", "Waiting for load_text");
     } else {
-      setDebugMessage("BLE disconnected", "Advertising again");
+      setDebugMessage("BLE disconnected", "Pair code " + std::to_string(X4_TTS_PAIRING_PASSKEY));
     }
   }
   if (advertising != lastAdvertisingState) {
     lastAdvertisingState = advertising;
     if (!connected) {
       if (advertising) {
-        setDebugMessage("BLE advertising", "Reconnected server advert");
+        setDebugMessage("BLE advertising", "Pair code " + std::to_string(X4_TTS_PAIRING_PASSKEY));
       } else {
         setDebugMessage("BLE stopped", "Retrying advertising...");
       }

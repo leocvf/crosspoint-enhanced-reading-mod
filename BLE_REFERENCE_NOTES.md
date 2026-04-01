@@ -34,6 +34,7 @@ Adapted from the reference manager approach:
 - Kept callback-based connection/write event handling and explicit logs.
 - Added WiFi-off-before-BLE initialization in `BluetoothManager::start()` to mirror the ESP32-C3 coexistence safety pattern.
 - Added NimBLE power/PHY/security setup in `BluetoothManager::start()` based on reference initialization behavior.
+- Added secure pairing for Remote TTS using a fixed passkey and encrypted characteristic writes so mobile clients pair before sending text/position packets.
 
 ## HID-specific pieces intentionally removed or isolated
 Not reused from reference `BluetoothHIDManager`:
