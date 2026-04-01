@@ -18,6 +18,7 @@ class RemoteTTSReaderActivity : public Activity {
   void onExit() override;
   void loop() override;
   void render(Activity::RenderLock&&) override;
+  bool preventAutoSleep() override { return true; }
 
  private:
   struct State {
