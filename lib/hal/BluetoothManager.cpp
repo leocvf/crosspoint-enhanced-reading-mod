@@ -82,10 +82,9 @@ bool BluetoothManager::start(const std::string& deviceName, PayloadCallback call
   NimBLEDevice::init(deviceName);
   nimbleInitialized = true;
   NimBLEDevice::setPower(ESP_PWR_LVL_P9);
-  // Allow receiving commands without pairing/bonding.
-  // This avoids clients being forced into a bind/pair step before WRITE commands work.
-  NimBLEDevice::setSecurityAuth(false, false, false);
-  LOG_INF("BLE", "Security mode: open (pairing not required)");
+  NimBLEDevice::setSecurityAuth(true, false, true);
+  NimBLEDevice::setSecurityPasskey(X4_TTS_PAIRING_PASSKEY);
+  LOG_INF("BLE", "Security mode: encrypted write required passkey=%u", static_cast<unsigned int>(X4_TTS_PAIRING_PASSKEY));
 
   server = NimBLEDevice::createServer();
   if (!server) {
@@ -113,6 +112,16 @@ bool BluetoothManager::start(const std::string& deviceName, PayloadCallback call
     return false;
   }
   commandCharacteristic->setCallbacks(new CommandCallbacks(*this));
+#ifdef ESP_GATT_PERM_WRITE_ENCRYPTED
+  commandCharacteristic->setAccessPermissions(ESP_GATT_PERM_WRITE_ENCRYPTED);
+#endif
+
+  feedbackCharacteristic = service->createCharacteristic(
+      X4_TTS_FEEDBACK_CHARACTERISTIC_UUID,
+      NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
+  if (!feedbackCharacteristic) {
+    LOG_ERR("BLE", "create feedbackCharacteristic failed; continuing without notify channel");
+  }
 
   service->start();
   NimBLEAdvertising* advertising = NimBLEDevice::getAdvertising();
@@ -169,6 +178,7 @@ void BluetoothManager::stop() {
   server = nullptr;
   service = nullptr;
   commandCharacteristic = nullptr;
+  feedbackCharacteristic = nullptr;
 }
 
 void BluetoothManager::poll() {
@@ -226,6 +236,20 @@ void BluetoothManager::poll() {
   for (const auto& payload : payloads) {
     payloadHandler(payload);
   }
+}
+
+bool BluetoothManager::sendFeedback(const std::string& payload) {
+  std::lock_guard<std::mutex> lock(stateMutex);
+  if (!feedbackCharacteristic || !connected.load()) {
+    return false;
+  }
+
+  feedbackCharacteristic->setValue(payload);
+  const bool notified = feedbackCharacteristic->notify();
+  if (!notified) {
+    LOG_ERR("BLE", "Feedback notify failed");
+  }
+  return notified;
 }
 
 void BluetoothManager::onCharacteristicWrite(const std::string& value) {
