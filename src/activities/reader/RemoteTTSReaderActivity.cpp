@@ -59,7 +59,7 @@ void RemoteTTSReaderActivity::render(Activity::RenderLock&&) {
   const int screenHeight = renderer.getScreenHeight();
   const int margin = 16;
   const int contentWidth = screenWidth - (margin * 2);
-  const int startY = 40;
+  const int startY = 54;
 
   if (state.textDirty) {
     wrapText(contentWidth);
@@ -71,12 +71,12 @@ void RemoteTTSReaderActivity::render(Activity::RenderLock&&) {
   const char* bleState = bt.isConnected() ? "Connected" : (bt.isAdvertising() ? "Advertising" : "Stopped");
   renderer.drawText(SMALL_FONT_ID, margin, 20, bleState, true);
   if (!debugLine1.empty()) {
-    renderer.drawText(SMALL_FONT_ID, margin + 88, 20, debugLine1.c_str(), true);
+    renderer.drawText(SMALL_FONT_ID, margin, 30, debugLine1.c_str(), true);
   }
   if (!debugLine2.empty()) {
-    renderer.drawText(SMALL_FONT_ID, margin, 30, debugLine2.c_str(), true);
+    renderer.drawText(SMALL_FONT_ID, margin, 40, debugLine2.c_str(), true);
   } else if (!bt.getLastError().empty()) {
-    renderer.drawText(SMALL_FONT_ID, margin, 30, bt.getLastError().c_str(), true);
+    renderer.drawText(SMALL_FONT_ID, margin, 40, bt.getLastError().c_str(), true);
   }
 
   const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID) + 2;
@@ -263,4 +263,5 @@ void RemoteTTSReaderActivity::setDebugMessage(const std::string& line1, const st
   debugLine1 = line1;
   debugLine2 = line2;
   state.highlightDirty = true;
+  requestUpdate();
 }
