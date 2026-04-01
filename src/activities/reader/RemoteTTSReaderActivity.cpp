@@ -18,7 +18,7 @@ void RemoteTTSReaderActivity::onEnter() {
       "CrossPoint-X4-TTS", [this](const std::string& payload) { handlePayload(payload); });
   if (!started) {
     LOG_ERR("RTTS", "BluetoothManager failed to start");
-    setDebugMessage("BLE start failed", "Check serial logs");
+    setDebugMessage("BLE start failed", BluetoothManager::instance().getLastError());
   } else {
     setDebugMessage("BLE advertising", "Use Android BLE client to write JSON");
   }
@@ -68,13 +68,15 @@ void RemoteTTSReaderActivity::render(Activity::RenderLock&&) {
   renderer.clearScreen();
   renderer.drawText(UI_12_FONT_ID, margin, 6, "Remote TTS Reader", true, EpdFontFamily::BOLD);
   const BluetoothManager& bt = BluetoothManager::instance();
-  const char* bleState = bt.isConnected() ? "Connected" : (bt.isStarted() ? "Advertising" : "Stopped");
+  const char* bleState = bt.isConnected() ? "Connected" : (bt.isAdvertising() ? "Advertising" : "Stopped");
   renderer.drawText(SMALL_FONT_ID, margin, 20, bleState, true);
   if (!debugLine1.empty()) {
     renderer.drawText(SMALL_FONT_ID, margin + 88, 20, debugLine1.c_str(), true);
   }
   if (!debugLine2.empty()) {
     renderer.drawText(SMALL_FONT_ID, margin, 30, debugLine2.c_str(), true);
+  } else if (!bt.getLastError().empty()) {
+    renderer.drawText(SMALL_FONT_ID, margin, 30, bt.getLastError().c_str(), true);
   }
 
   const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID) + 2;

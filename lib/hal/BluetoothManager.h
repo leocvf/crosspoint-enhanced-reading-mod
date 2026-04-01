@@ -19,6 +19,8 @@ class BluetoothManager {
   bool isStarted() const { return started; }
   bool isConnected() const { return connected; }
   bool hasNimbleInit() const { return nimbleInitialized; }
+  bool isAdvertising() const { return advertisingActive; }
+  const std::string& getLastError() const { return lastError; }
 
  private:
   class ServerCallbacks;
@@ -31,6 +33,8 @@ class BluetoothManager {
   bool started = false;
   bool connected = false;
   bool nimbleInitialized = false;
+  bool advertisingActive = false;
+  std::string lastError;
   PayloadCallback onPayload;
   NimBLEServer* server = nullptr;
   NimBLEService* service = nullptr;
