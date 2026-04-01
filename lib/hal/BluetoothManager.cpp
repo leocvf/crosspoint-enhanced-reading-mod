@@ -82,12 +82,10 @@ bool BluetoothManager::start(const std::string& deviceName, PayloadCallback call
   NimBLEDevice::init(deviceName);
   nimbleInitialized = true;
   NimBLEDevice::setPower(ESP_PWR_LVL_P9);
-  // Require bonding + MITM protection so Android must pair before writing TTS payloads.
-  NimBLEDevice::setSecurityAuth(true, false, true);
-  NimBLEDevice::setSecurityIOCap(BLE_HS_IO_DISPLAY_ONLY);
-  NimBLEDevice::setSecurityPasskey(X4_TTS_PAIRING_PASSKEY);
-  LOG_INF("BLE", "Security enabled: pairing required (passkey=%06lu)",
-          static_cast<unsigned long>(X4_TTS_PAIRING_PASSKEY));
+  // Allow receiving commands without pairing/bonding.
+  // This avoids clients being forced into a bind/pair step before WRITE commands work.
+  NimBLEDevice::setSecurityAuth(false, false, false);
+  LOG_INF("BLE", "Security mode: open (pairing not required)");
 
   server = NimBLEDevice::createServer();
   if (!server) {
@@ -107,7 +105,7 @@ bool BluetoothManager::start(const std::string& deviceName, PayloadCallback call
   }
   commandCharacteristic = service->createCharacteristic(
       X4_TTS_COMMAND_CHARACTERISTIC_UUID,
-      NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::WRITE_ENC);
+      NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
   if (!commandCharacteristic) {
     std::lock_guard<std::mutex> lock(stateMutex);
     lastError = "createCharacteristic failed";
