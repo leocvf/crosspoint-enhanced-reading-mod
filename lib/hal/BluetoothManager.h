@@ -2,7 +2,9 @@
 
 #include <NimBLEDevice.h>
 
+#include <atomic>
 #include <functional>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -16,11 +18,11 @@ class BluetoothManager {
   void stop();
   void poll();
 
-  bool isStarted() const { return started; }
-  bool isConnected() const { return connected; }
-  bool hasNimbleInit() const { return nimbleInitialized; }
-  bool isAdvertising() const { return advertisingActive; }
-  const std::string& getLastError() const { return lastError; }
+  bool isStarted() const;
+  bool isConnected() const;
+  bool hasNimbleInit() const;
+  bool isAdvertising() const;
+  std::string getLastError() const;
 
  private:
   class ServerCallbacks;
@@ -30,19 +32,20 @@ class BluetoothManager {
   BluetoothManager(const BluetoothManager&) = delete;
   BluetoothManager& operator=(const BluetoothManager&) = delete;
 
-  bool started = false;
-  bool connected = false;
-  bool nimbleInitialized = false;
-  bool advertisingActive = false;
+  std::atomic<bool> started = false;
+  std::atomic<bool> connected = false;
+  std::atomic<bool> nimbleInitialized = false;
+  std::atomic<bool> advertisingActive = false;
   std::string lastError;
   PayloadCallback onPayload;
   NimBLEServer* server = nullptr;
   NimBLEService* service = nullptr;
   NimBLECharacteristic* commandCharacteristic = nullptr;
   std::vector<std::string> pendingPayloads;
+  mutable std::mutex stateMutex;
   static constexpr size_t MAX_PENDING_PAYLOADS = 16;
   unsigned long nextAdvertisingRetryAtMs = 0;
-  bool advertisingRestartRequested = false;
+  std::atomic<bool> advertisingRestartRequested = false;
 
   void onCharacteristicWrite(const std::string& value);
   void onConnect();
