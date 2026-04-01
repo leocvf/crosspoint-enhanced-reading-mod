@@ -102,7 +102,7 @@ void RemoteTTSReaderActivity::render(Activity::RenderLock&&) {
       }
       const std::string word = text.substr(idx, wordEnd - idx);
       const std::string candidate = line.empty() ? word : (line + " " + word);
-      const bool fits = renderer.getStringWidth(SMALL_FONT_ID, candidate.c_str()) <= contentWidth;
+      const bool fits = renderer.getTextWidth(SMALL_FONT_ID, candidate.c_str()) <= contentWidth;
 
       if (!line.empty() && !fits) {
         renderer.drawText(SMALL_FONT_ID, margin, statusY, line.c_str(), true);
