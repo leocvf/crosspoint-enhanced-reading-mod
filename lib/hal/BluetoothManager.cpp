@@ -14,14 +14,7 @@ class BluetoothManager::ServerCallbacks : public NimBLEServerCallbacks {
 
   void onDisconnect(NimBLEServer*) override {
     manager.onDisconnect();
-    const bool restarted = NimBLEDevice::startAdvertising();
-    manager.advertisingActive = restarted;
-    if (restarted) {
-      LOG_INF("BLE", "Restarted advertising after disconnect");
-    } else {
-      manager.lastError = "Failed to restart advertising";
-      LOG_ERR("BLE", "%s", manager.lastError.c_str());
-    }
+    manager.advertisingRestartRequested = true;
   }
 
  private:
@@ -111,6 +104,7 @@ bool BluetoothManager::start(const std::string& deviceName, PayloadCallback call
   }
 
   nextAdvertisingRetryAtMs = 0;
+  advertisingRestartRequested = false;
   started = true;
   LOG_INF("BLE", "BluetoothManager started, advertising service %s name=%s", X4_TTS_SERVICE_UUID, deviceName.c_str());
   return true;
@@ -133,12 +127,27 @@ void BluetoothManager::stop() {
   advertisingActive = false;
   started = false;
   nextAdvertisingRetryAtMs = 0;
+  advertisingRestartRequested = false;
   server = nullptr;
   service = nullptr;
   commandCharacteristic = nullptr;
 }
 
 void BluetoothManager::poll() {
+  if (started && advertisingRestartRequested && !connected) {
+    advertisingRestartRequested = false;
+    const bool restarted = NimBLEDevice::startAdvertising();
+    advertisingActive = restarted;
+    if (restarted) {
+      lastError.clear();
+      LOG_INF("BLE", "Restarted advertising after disconnect");
+    } else {
+      lastError = "Failed to restart advertising";
+      nextAdvertisingRetryAtMs = millis() + 2000;
+      LOG_ERR("BLE", "%s", lastError.c_str());
+    }
+  }
+
   if (started && !connected && !advertisingActive) {
     const unsigned long now = millis();
     if (nextAdvertisingRetryAtMs == 0 || now >= nextAdvertisingRetryAtMs) {
