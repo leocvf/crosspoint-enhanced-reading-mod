@@ -41,6 +41,7 @@ class RemoteTTSReaderActivity : public Activity {
   std::string debugLine1;
   std::string debugLine2;
   bool lastConnectedState = false;
+  bool lastAdvertisingState = false;
 
   void handlePayload(const std::string& payload);
   void handleCommand(const JsonDocument& doc);
