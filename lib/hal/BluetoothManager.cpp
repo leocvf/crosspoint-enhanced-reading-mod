@@ -57,7 +57,10 @@ bool BluetoothManager::start(const std::string& deviceName, PayloadCallback call
   NimBLEDevice::init(deviceName);
   nimbleInitialized = true;
   NimBLEDevice::setPower(ESP_PWR_LVL_P9);
-  NimBLEDevice::setSecurityAuth(true, false, true);
+  // Remote TTS transport is write-only to a known GATT characteristic.
+  // Keep auth disabled so Android apps can connect and write without an explicit pair/bond step.
+  NimBLEDevice::setSecurityAuth(false, false, false);
+  LOG_INF("BLE", "Security auth disabled for easier app connectivity (no pairing required)");
 
   server = NimBLEDevice::createServer();
   server->setCallbacks(new ServerCallbacks(*this));

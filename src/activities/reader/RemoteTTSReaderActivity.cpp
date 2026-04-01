@@ -18,7 +18,11 @@ void RemoteTTSReaderActivity::onEnter() {
       "CrossPoint-X4-TTS", [this](const std::string& payload) { handlePayload(payload); });
   if (!started) {
     LOG_ERR("RTTS", "BluetoothManager failed to start");
+    setDebugMessage("BLE start failed", "Check serial logs");
+  } else {
+    setDebugMessage("BLE advertising", "Use Android BLE client to write JSON");
   }
+  lastConnectedState = BluetoothManager::instance().isConnected();
   requestUpdate();
 }
 
@@ -30,6 +34,15 @@ void RemoteTTSReaderActivity::onExit() {
 
 void RemoteTTSReaderActivity::loop() {
   BluetoothManager::instance().poll();
+  const bool connected = BluetoothManager::instance().isConnected();
+  if (connected != lastConnectedState) {
+    lastConnectedState = connected;
+    if (connected) {
+      setDebugMessage("BLE connected", "Waiting for load_text");
+    } else {
+      setDebugMessage("BLE disconnected", "Advertising again");
+    }
+  }
 
   if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
     onExitToHome();
@@ -46,7 +59,7 @@ void RemoteTTSReaderActivity::render(Activity::RenderLock&&) {
   const int screenHeight = renderer.getScreenHeight();
   const int margin = 16;
   const int contentWidth = screenWidth - (margin * 2);
-  const int startY = 24;
+  const int startY = 40;
 
   if (state.textDirty) {
     wrapText(contentWidth);
@@ -54,6 +67,15 @@ void RemoteTTSReaderActivity::render(Activity::RenderLock&&) {
 
   renderer.clearScreen();
   renderer.drawText(UI_12_FONT_ID, margin, 6, "Remote TTS Reader", true, EpdFontFamily::BOLD);
+  const BluetoothManager& bt = BluetoothManager::instance();
+  const char* bleState = bt.isConnected() ? "Connected" : (bt.isStarted() ? "Advertising" : "Stopped");
+  renderer.drawText(SMALL_FONT_ID, margin, 20, bleState, true);
+  if (!debugLine1.empty()) {
+    renderer.drawText(SMALL_FONT_ID, margin + 88, 20, debugLine1.c_str(), true);
+  }
+  if (!debugLine2.empty()) {
+    renderer.drawText(SMALL_FONT_ID, margin, 30, debugLine2.c_str(), true);
+  }
 
   const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID) + 2;
   int y = startY;
@@ -87,15 +109,18 @@ void RemoteTTSReaderActivity::handlePayload(const std::string& payload) {
   auto err = deserializeJson(doc, payload);
   if (err) {
     LOG_ERR("RTTS", "JSON parse failed: %s", err.c_str());
+    setDebugMessage("JSON parse failed", err.c_str());
     return;
   }
 
+  setDebugMessage("JSON received", payload.substr(0, 40));
   handleCommand(doc);
 }
 
 void RemoteTTSReaderActivity::handleCommand(const JsonDocument& doc) {
   if (!doc["type"].is<const char*>()) {
     LOG_ERR("RTTS", "Rejected command: missing type");
+    setDebugMessage("Rejected command", "Missing type");
     return;
   }
 
@@ -103,6 +128,7 @@ void RemoteTTSReaderActivity::handleCommand(const JsonDocument& doc) {
 
   if (type == "ping") {
     LOG_INF("RTTS", "Received ping");
+    setDebugMessage("Command: ping");
     return;
   }
 
@@ -114,12 +140,14 @@ void RemoteTTSReaderActivity::handleCommand(const JsonDocument& doc) {
     state.textDirty = true;
     state.highlightDirty = true;
     LOG_INF("RTTS", "Cleared document state");
+    setDebugMessage("Command: clear");
     return;
   }
 
   if (type == "load_text") {
     if (!doc["docId"].is<const char*>() || !doc["text"].is<const char*>()) {
       LOG_ERR("RTTS", "Rejected load_text: missing docId/text");
+      setDebugMessage("Rejected load_text", "Missing docId/text");
       return;
     }
 
@@ -130,18 +158,21 @@ void RemoteTTSReaderActivity::handleCommand(const JsonDocument& doc) {
     state.textDirty = true;
     state.highlightDirty = true;
     LOG_INF("RTTS", "Loaded docId=%s chars=%d", state.currentDocId.c_str(), state.text.size());
+    setDebugMessage("Loaded text", ("docId=" + state.currentDocId).c_str());
     return;
   }
 
   if (type == "position") {
     if (!doc["docId"].is<const char*>() || !doc["start"].is<int>() || !doc["end"].is<int>()) {
       LOG_ERR("RTTS", "Rejected position: missing fields");
+      setDebugMessage("Rejected position", "Missing docId/start/end");
       return;
     }
 
     const std::string docId = doc["docId"].as<const char*>();
     if (docId != state.currentDocId) {
       LOG_INF("RTTS", "Ignored position for docId=%s current=%s", docId.c_str(), state.currentDocId.c_str());
+      setDebugMessage("Ignored position", "docId mismatch");
       return;
     }
 
@@ -158,10 +189,12 @@ void RemoteTTSReaderActivity::handleCommand(const JsonDocument& doc) {
     state.highlightEnd = end;
     state.highlightDirty = true;
     LOG_INF("RTTS", "Updated position %d-%d", start, end);
+    setDebugMessage("Position updated", (std::to_string(start) + "-" + std::to_string(end)).c_str());
     return;
   }
 
   LOG_ERR("RTTS", "Rejected command: unknown type %s", type.c_str());
+  setDebugMessage("Rejected command", ("Unknown type: " + type).c_str());
 }
 
 void RemoteTTSReaderActivity::wrapText(int maxWidth) {
@@ -221,5 +254,11 @@ void RemoteTTSReaderActivity::setDemoContent() {
   state.highlightStart = 36;
   state.highlightEnd = 80;
   state.textDirty = true;
+  state.highlightDirty = true;
+}
+
+void RemoteTTSReaderActivity::setDebugMessage(const std::string& line1, const std::string& line2) {
+  debugLine1 = line1;
+  debugLine2 = line2;
   state.highlightDirty = true;
 }
