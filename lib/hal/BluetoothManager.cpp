@@ -245,11 +245,8 @@ bool BluetoothManager::sendFeedback(const std::string& payload) {
   }
 
   feedbackCharacteristic->setValue(payload);
-  const bool notified = feedbackCharacteristic->notify();
-  if (!notified) {
-    LOG_ERR("BLE", "Feedback notify failed");
-  }
-  return notified;
+  feedbackCharacteristic->notify();
+  return true;
 }
 
 void BluetoothManager::onCharacteristicWrite(const std::string& value) {
