@@ -160,7 +160,7 @@ void RemoteTTSReaderActivity::render(Activity::RenderLock&&) {
 void RemoteTTSReaderActivity::handlePayload(const std::string& payload) {
   LOG_DBG("RTTS", "Incoming payload: %s", payload.c_str());
 
-  StaticJsonDocument<2048> doc;
+  JsonDocument doc;
   auto err = deserializeJson(doc, payload);
   if (err) {
     LOG_ERR("RTTS", "JSON parse failed: %s", err.c_str());
