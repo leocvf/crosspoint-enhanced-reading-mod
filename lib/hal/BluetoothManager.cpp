@@ -13,8 +13,14 @@ class BluetoothManager::ServerCallbacks : public NimBLEServerCallbacks {
 
   void onDisconnect(NimBLEServer*) override {
     manager.onDisconnect();
-    NimBLEDevice::startAdvertising();
-    LOG_INF("BLE", "Restarted advertising after disconnect");
+    const bool restarted = NimBLEDevice::startAdvertising();
+    manager.advertisingActive = restarted;
+    if (restarted) {
+      LOG_INF("BLE", "Restarted advertising after disconnect");
+    } else {
+      manager.lastError = "Failed to restart advertising";
+      LOG_ERR("BLE", "%s", manager.lastError.c_str());
+    }
   }
 
  private:
@@ -41,6 +47,7 @@ BluetoothManager& BluetoothManager::instance() {
 
 bool BluetoothManager::start(const std::string& deviceName, PayloadCallback callback) {
   onPayload = callback;
+  lastError.clear();
   if (started) {
     LOG_INF("BLE", "BluetoothManager already started");
     return true;
@@ -57,24 +64,53 @@ bool BluetoothManager::start(const std::string& deviceName, PayloadCallback call
   NimBLEDevice::init(deviceName);
   nimbleInitialized = true;
   NimBLEDevice::setPower(ESP_PWR_LVL_P9);
-  NimBLEDevice::setSecurityAuth(true, false, true);
+  // Remote TTS transport is write-only to a known GATT characteristic.
+  // Keep auth disabled so Android apps can connect and write without an explicit pair/bond step.
+  NimBLEDevice::setSecurityAuth(false, false, false);
+  LOG_INF("BLE", "Security auth disabled for easier app connectivity (no pairing required)");
 
   server = NimBLEDevice::createServer();
+  if (!server) {
+    lastError = "createServer failed";
+    LOG_ERR("BLE", "%s", lastError.c_str());
+    return false;
+  }
   server->setCallbacks(new ServerCallbacks(*this));
 
   service = server->createService(X4_TTS_SERVICE_UUID);
+  if (!service) {
+    lastError = "createService failed";
+    LOG_ERR("BLE", "%s", lastError.c_str());
+    return false;
+  }
   commandCharacteristic = service->createCharacteristic(
       X4_TTS_COMMAND_CHARACTERISTIC_UUID, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
+  if (!commandCharacteristic) {
+    lastError = "createCharacteristic failed";
+    LOG_ERR("BLE", "%s", lastError.c_str());
+    return false;
+  }
   commandCharacteristic->setCallbacks(new CommandCallbacks(*this));
 
   service->start();
   NimBLEAdvertising* advertising = NimBLEDevice::getAdvertising();
+  if (!advertising) {
+    lastError = "getAdvertising failed";
+    LOG_ERR("BLE", "%s", lastError.c_str());
+    return false;
+  }
   advertising->addServiceUUID(X4_TTS_SERVICE_UUID);
   advertising->setScanResponse(true);
-  advertising->start();
+  advertising->setName(deviceName);
+  advertisingActive = advertising->start();
+  if (!advertisingActive) {
+    lastError = "advertising->start failed";
+    LOG_ERR("BLE", "%s", lastError.c_str());
+    return false;
+  }
 
   started = true;
-  LOG_INF("BLE", "BluetoothManager started, advertising service %s", X4_TTS_SERVICE_UUID);
+  LOG_INF("BLE", "BluetoothManager started, advertising service %s name=%s", X4_TTS_SERVICE_UUID, deviceName.c_str());
   return true;
 }
 
@@ -92,6 +128,7 @@ void BluetoothManager::stop() {
 
   pendingPayloads.clear();
   connected = false;
+  advertisingActive = false;
   started = false;
   server = nullptr;
   service = nullptr;

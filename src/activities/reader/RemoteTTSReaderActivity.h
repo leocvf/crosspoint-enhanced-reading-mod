@@ -38,9 +38,13 @@ class RemoteTTSReaderActivity : public Activity {
 
   std::vector<WrappedLine> wrappedLines;
   const std::function<void()> onExitToHome;
+  std::string debugLine1;
+  std::string debugLine2;
+  bool lastConnectedState = false;
 
   void handlePayload(const std::string& payload);
   void handleCommand(const JsonDocument& doc);
   void wrapText(int maxWidth);
   void setDemoContent();
+  void setDebugMessage(const std::string& line1, const std::string& line2 = "");
 };
