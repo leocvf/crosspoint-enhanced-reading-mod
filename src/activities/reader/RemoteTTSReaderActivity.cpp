@@ -150,7 +150,7 @@ void RemoteTTSReaderActivity::render(Activity::RenderLock&&) {
   }
 
   renderer.drawText(SMALL_FONT_ID, margin, screenHeight - 10, "Back: Home");
-  renderer.displayBuffer((state.textDirty) ? HalDisplay::FULL_REFRESH : HalDisplay::HALF_REFRESH);
+  renderer.displayBuffer(HalDisplay::FULL_REFRESH);
 
   state.textDirty = false;
   state.highlightDirty = false;

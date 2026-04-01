@@ -39,10 +39,34 @@ BluetoothManager& BluetoothManager::instance() {
   return manager;
 }
 
+bool BluetoothManager::isStarted() const {
+  return started.load();
+}
+
+bool BluetoothManager::isConnected() const {
+  return connected.load();
+}
+
+bool BluetoothManager::hasNimbleInit() const {
+  return nimbleInitialized.load();
+}
+
+bool BluetoothManager::isAdvertising() const {
+  return advertisingActive.load();
+}
+
+std::string BluetoothManager::getLastError() const {
+  std::lock_guard<std::mutex> lock(stateMutex);
+  return lastError;
+}
+
 bool BluetoothManager::start(const std::string& deviceName, PayloadCallback callback) {
-  onPayload = callback;
-  lastError.clear();
-  if (started) {
+  {
+    std::lock_guard<std::mutex> lock(stateMutex);
+    onPayload = callback;
+    lastError.clear();
+  }
+  if (started.load()) {
     LOG_INF("BLE", "BluetoothManager already started");
     return true;
   }
@@ -65,6 +89,7 @@ bool BluetoothManager::start(const std::string& deviceName, PayloadCallback call
 
   server = NimBLEDevice::createServer();
   if (!server) {
+    std::lock_guard<std::mutex> lock(stateMutex);
     lastError = "createServer failed";
     LOG_ERR("BLE", "%s", lastError.c_str());
     return false;
@@ -73,6 +98,7 @@ bool BluetoothManager::start(const std::string& deviceName, PayloadCallback call
 
   service = server->createService(X4_TTS_SERVICE_UUID);
   if (!service) {
+    std::lock_guard<std::mutex> lock(stateMutex);
     lastError = "createService failed";
     LOG_ERR("BLE", "%s", lastError.c_str());
     return false;
@@ -80,6 +106,7 @@ bool BluetoothManager::start(const std::string& deviceName, PayloadCallback call
   commandCharacteristic = service->createCharacteristic(
       X4_TTS_COMMAND_CHARACTERISTIC_UUID, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
   if (!commandCharacteristic) {
+    std::lock_guard<std::mutex> lock(stateMutex);
     lastError = "createCharacteristic failed";
     LOG_ERR("BLE", "%s", lastError.c_str());
     return false;
@@ -89,6 +116,7 @@ bool BluetoothManager::start(const std::string& deviceName, PayloadCallback call
   service->start();
   NimBLEAdvertising* advertising = NimBLEDevice::getAdvertising();
   if (!advertising) {
+    std::lock_guard<std::mutex> lock(stateMutex);
     lastError = "getAdvertising failed";
     LOG_ERR("BLE", "%s", lastError.c_str());
     return false;
@@ -97,13 +125,17 @@ bool BluetoothManager::start(const std::string& deviceName, PayloadCallback call
   advertising->setScanResponse(true);
   advertising->setName(deviceName);
   advertisingActive = advertising->start();
-  if (!advertisingActive) {
+  if (!advertisingActive.load()) {
+    std::lock_guard<std::mutex> lock(stateMutex);
     lastError = "advertising->start failed";
     LOG_ERR("BLE", "%s", lastError.c_str());
     return false;
   }
 
-  nextAdvertisingRetryAtMs = 0;
+  {
+    std::lock_guard<std::mutex> lock(stateMutex);
+    nextAdvertisingRetryAtMs = 0;
+  }
   advertisingRestartRequested = false;
   started = true;
   LOG_INF("BLE", "BluetoothManager started, advertising service %s name=%s", X4_TTS_SERVICE_UUID, deviceName.c_str());
@@ -111,22 +143,27 @@ bool BluetoothManager::start(const std::string& deviceName, PayloadCallback call
 }
 
 void BluetoothManager::stop() {
-  if (!started) {
+  if (!started.load()) {
     return;
   }
 
   LOG_INF("BLE", "Stopping BluetoothManager");
-  if (nimbleInitialized) {
+  if (nimbleInitialized.load()) {
     NimBLEDevice::stopAdvertising();
     NimBLEDevice::deinit(false);
     nimbleInitialized = false;
   }
 
-  pendingPayloads.clear();
+  {
+    std::lock_guard<std::mutex> lock(stateMutex);
+    pendingPayloads.clear();
+    onPayload = nullptr;
+    nextAdvertisingRetryAtMs = 0;
+    lastError.clear();
+  }
   connected = false;
   advertisingActive = false;
   started = false;
-  nextAdvertisingRetryAtMs = 0;
   advertisingRestartRequested = false;
   server = nullptr;
   service = nullptr;
@@ -134,49 +171,64 @@ void BluetoothManager::stop() {
 }
 
 void BluetoothManager::poll() {
-  if (started && advertisingRestartRequested && !connected) {
+  if (started.load() && advertisingRestartRequested.load() && !connected.load()) {
     advertisingRestartRequested = false;
     const bool restarted = NimBLEDevice::startAdvertising();
     advertisingActive = restarted;
     if (restarted) {
+      std::lock_guard<std::mutex> lock(stateMutex);
       lastError.clear();
       LOG_INF("BLE", "Restarted advertising after disconnect");
     } else {
+      std::lock_guard<std::mutex> lock(stateMutex);
       lastError = "Failed to restart advertising";
       nextAdvertisingRetryAtMs = millis() + 2000;
       LOG_ERR("BLE", "%s", lastError.c_str());
     }
   }
 
-  if (started && !connected && !advertisingActive) {
+  if (started.load() && !connected.load() && !advertisingActive.load()) {
     const unsigned long now = millis();
-    if (nextAdvertisingRetryAtMs == 0 || now >= nextAdvertisingRetryAtMs) {
+    unsigned long nextRetryAt = 0;
+    {
+      std::lock_guard<std::mutex> lock(stateMutex);
+      nextRetryAt = nextAdvertisingRetryAtMs;
+    }
+    if (nextRetryAt == 0 || now >= nextRetryAt) {
       const bool restarted = NimBLEDevice::startAdvertising();
       advertisingActive = restarted;
       if (restarted) {
+        std::lock_guard<std::mutex> lock(stateMutex);
         lastError.clear();
         nextAdvertisingRetryAtMs = 0;
         LOG_INF("BLE", "Recovered advertising from poll()");
       } else {
+        std::lock_guard<std::mutex> lock(stateMutex);
         lastError = "Advertising stopped; retry pending";
         nextAdvertisingRetryAtMs = now + 2000;
       }
     }
   }
 
-  if (!onPayload || pendingPayloads.empty()) {
-    return;
+  std::vector<std::string> payloads;
+  PayloadCallback payloadHandler;
+  {
+    std::lock_guard<std::mutex> lock(stateMutex);
+    if (!onPayload || pendingPayloads.empty()) {
+      return;
+    }
+    payloads = std::move(pendingPayloads);
+    pendingPayloads.clear();
+    payloadHandler = onPayload;
   }
 
-  auto payloads = std::move(pendingPayloads);
-  pendingPayloads.clear();
-
   for (const auto& payload : payloads) {
-    onPayload(payload);
+    payloadHandler(payload);
   }
 }
 
 void BluetoothManager::onCharacteristicWrite(const std::string& value) {
+  std::lock_guard<std::mutex> lock(stateMutex);
   if (pendingPayloads.size() >= MAX_PENDING_PAYLOADS) {
     LOG_ERR("BLE", "Dropping BLE payload due to full queue (%u)", static_cast<unsigned int>(MAX_PENDING_PAYLOADS));
     return;
@@ -186,12 +238,14 @@ void BluetoothManager::onCharacteristicWrite(const std::string& value) {
 }
 
 void BluetoothManager::onConnect() {
+  std::lock_guard<std::mutex> lock(stateMutex);
   connected = true;
   advertisingActive = false;
   LOG_INF("BLE", "BLE client connected");
 }
 
 void BluetoothManager::onDisconnect() {
+  std::lock_guard<std::mutex> lock(stateMutex);
   connected = false;
   nextAdvertisingRetryAtMs = 0;
   LOG_INF("BLE", "BLE client disconnected");
