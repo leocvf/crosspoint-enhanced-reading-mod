@@ -42,6 +42,7 @@ class BluetoothManager {
   std::vector<std::string> pendingPayloads;
   static constexpr size_t MAX_PENDING_PAYLOADS = 16;
   unsigned long nextAdvertisingRetryAtMs = 0;
+  bool advertisingRestartRequested = false;
 
   void onCharacteristicWrite(const std::string& value);
   void onConnect();
