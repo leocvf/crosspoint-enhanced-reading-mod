@@ -18,6 +18,7 @@ class BluetoothManager {
 
   bool isStarted() const { return started; }
   bool isConnected() const { return connected; }
+  bool hasNimbleInit() const { return nimbleInitialized; }
 
  private:
   class ServerCallbacks;
