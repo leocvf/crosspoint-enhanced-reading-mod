@@ -3,6 +3,8 @@
 #include <ArduinoJson.h>
 
 #include <functional>
+#include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -29,12 +31,32 @@ class RemoteTTSReaderActivity : public Activity {
     int highlightEnd = 0;
     bool textDirty = true;
     bool highlightDirty = true;
+    int renderWindowStart = 0;
+    int renderWindowEnd = 0;
   } state;
 
   struct WrappedLine {
     std::string text;
     int start = 0;
     int end = 0;
+  };
+
+  struct StreamChunk {
+    uint32_t seq = 0;
+    int offset = 0;
+    std::string text;
+    uint32_t receivedAtMs = 0;
+  };
+
+  struct StreamStats {
+    uint32_t chunksReceived = 0;
+    uint32_t duplicateChunks = 0;
+    uint32_t gapEvents = 0;
+    uint32_t highlightMisses = 0;
+    uint32_t malformedPackets = 0;
+    uint32_t commits = 0;
+    uint32_t commitLatencyMs = 0;
+    uint32_t maxCommitLatencyMs = 0;
   };
 
   std::vector<WrappedLine> wrappedLines;
@@ -47,6 +69,29 @@ class RemoteTTSReaderActivity : public Activity {
   bool autoFollowHighlight = true;
   bool lastConnectedState = false;
   bool lastAdvertisingState = false;
+  bool lastRenderWasFullRefresh = true;
+  unsigned long lastRenderMs = 0;
+
+  bool streamMode = false;
+  std::string streamSessionId;
+  std::string streamDocId;
+  uint32_t highestContiguousSeq = 0;
+  uint32_t lastCommitSeq = 0;
+  uint32_t streamStartSeq = 1;
+  int committedBaseOffset = 0;
+  std::string committedText;
+  std::map<int, std::string> deferredCommitted;
+  std::map<uint32_t, StreamChunk> pendingChunks;
+  std::set<uint32_t> seenChunkSeq;
+  StreamStats stats;
+  uint32_t streamCommitStartedAtMs = 0;
+  int renderPointerGlobal = 0;
+
+  static constexpr size_t MAX_JSON_BYTES = 768;
+  static constexpr size_t MAX_PENDING_CHUNKS = 96;
+  static constexpr size_t MAX_STREAM_BYTES = 24 * 1024;
+  static constexpr size_t MAX_COMMITTED_BYTES = 16 * 1024;
+  static constexpr unsigned long RENDER_COALESCE_MS = 120;
 
   void handlePayload(const std::string& payload);
   void handleCommand(const JsonDocument& doc);
@@ -54,4 +99,17 @@ class RemoteTTSReaderActivity : public Activity {
   void setDemoContent();
   void clearLoadedContent();
   void setDebugMessage(const std::string& line1, const std::string& line2 = "");
+
+  void resetStreamingSession(const std::string& reason);
+  void handleStreamStart(const JsonDocument& doc);
+  void handleStreamChunk(const JsonDocument& doc);
+  void handleStreamCommit(const JsonDocument& doc);
+  void handleStreamSeek(const JsonDocument& doc);
+  void handleStreamEnd(const JsonDocument& doc);
+  void commitChunk(const StreamChunk& chunk);
+  void stitchDeferredCommitted();
+  void enforceStreamMemoryBudget();
+  void rebuildRenderWindow();
+  void mapHighlightToRenderWindow(int globalStart, int globalEnd);
+  void emitAckLogHook(const char* reason);
 };

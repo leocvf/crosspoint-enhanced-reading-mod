@@ -27,6 +27,7 @@ class BluetoothManager {
  private:
   class ServerCallbacks;
   class CommandCallbacks;
+  class FeedbackDescriptorCallbacks;
 
   BluetoothManager() = default;
   BluetoothManager(const BluetoothManager&) = delete;
@@ -42,8 +43,14 @@ class BluetoothManager {
   NimBLEService* service = nullptr;
   NimBLECharacteristic* commandCharacteristic = nullptr;
   std::vector<std::string> pendingPayloads;
+  NimBLECharacteristic* feedbackCharacteristic = nullptr;
   mutable std::mutex stateMutex;
   static constexpr size_t MAX_PENDING_PAYLOADS = 16;
+
+ public:
+  bool sendFeedback(const std::string& payload);
+
+ private:
   unsigned long nextAdvertisingRetryAtMs = 0;
   std::atomic<bool> advertisingRestartRequested = false;
 
