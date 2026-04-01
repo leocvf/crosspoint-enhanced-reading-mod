@@ -69,7 +69,7 @@ Saved highlights are stored as human-readable text files on the SD card in the `
 ### Recommended (Web Flasher)
 
 1. Connect your Xteink X4 to your computer via USB-C
-2. Download the `firmware.bin` from the [latest release](https://github.com/ztrawhcs/crosspoint-enhanced-reading-mod/releases)
+2. Download the `firmware.bin` from the [latest release](https://github.com/leocvf/crosspoint-enhanced-reading-mod/releases)
 3. Go to https://xteink.dve.al/ and flash the file using the **OTA fast flash controls** section
 
 ### Reverting to Stock
@@ -86,7 +86,7 @@ Flash the official firmware from https://xteink.dve.al/, or use the **Swap boot 
 This project uses PlatformIO. Clone the repo and flash with:
 
 ```sh
-git clone --recursive https://github.com/ztrawhcs/crosspoint-enhanced-reading-mod
+git clone --recursive https://github.com/leocvf/crosspoint-enhanced-reading-mod
 pio run --target upload
 ```
 

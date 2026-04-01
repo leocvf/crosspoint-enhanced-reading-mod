@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is the **"ztrawhcs"** fork of the open-source [Crosspoint e-reader firmware](https://github.com/crosspoint-reader/crosspoint-reader), targeting the Xteink X4 ESP32-C3 e-ink device. It adds custom features on top of upstream while tracking upstream releases for merging.
+This is the **"leocvf"** fork of the open-source [Crosspoint e-reader firmware](https://github.com/crosspoint-reader/crosspoint-reader), targeting the Xteink X4 ESP32-C3 e-ink device. It adds custom features on top of upstream while tracking upstream releases for merging.
 
-- **This repo:** https://github.com/ztrawhcs/crosspoint-enhanced-reading-mod
+- **This repo:** https://github.com/leocvf/crosspoint-enhanced-reading-mod
 - **Upstream repo:** https://github.com/crosspoint-reader/crosspoint-reader
 - **Current version:** v2.0.0
 
@@ -78,7 +78,7 @@ All of these must be preserved through upstream merges.
 ### Boot Screen Branding (`src/activities/boot/BootActivity.cpp`)
 ```cpp
 renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 70, "Crosspoint: Enhanced Reading Mod", true, EpdFontFamily::BOLD);
-renderer.drawCenteredText(SMALL_FONT_ID, pageHeight - 30, "ztrawhcs version 1.2.0");
+renderer.drawCenteredText(SMALL_FONT_ID, pageHeight - 30, "leocvf version 1.2.0");
 ```
 
 ### Button Mod System
