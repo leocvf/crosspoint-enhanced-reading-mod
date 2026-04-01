@@ -6,6 +6,7 @@
 #include <HalGPIO.h>
 #include <HalPowerManager.h>
 #include <HalStorage.h>
+#include <BluetoothManager.h>
 #include <I18n.h>
 #include <Logging.h>
 #include <SPI.h>
@@ -404,9 +405,13 @@ void loop() {
     }
   }
 
-  // Check for any user activity (button press or release) or active background work
+  // Check for any user activity (button press/release), active background work, or BLE activity.
+  // Keeping BLE active here prevents aggressive idle behavior (deep sleep + low CPU mode)
+  // from interrupting Remote TTS sessions after a few seconds of no button input.
   static unsigned long lastActivityTime = millis();
-  if (gpio.wasAnyPressed() || gpio.wasAnyReleased() || (currentActivity && currentActivity->preventAutoSleep())) {
+  const bool bluetoothActive = BluetoothManager::instance().isStarted();
+  if (gpio.wasAnyPressed() || gpio.wasAnyReleased() || bluetoothActive ||
+      (currentActivity && currentActivity->preventAutoSleep())) {
     lastActivityTime = millis();         // Reset inactivity timer
     powerManager.setPowerSaving(false);  // Restore normal CPU frequency on user activity
   }
