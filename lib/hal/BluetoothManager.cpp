@@ -1,0 +1,131 @@
+#include "BluetoothManager.h"
+
+#include <Logging.h>
+#include <WiFi.h>
+
+#include "RemoteTTSConstants.h"
+
+class BluetoothManager::ServerCallbacks : public NimBLEServerCallbacks {
+ public:
+  explicit ServerCallbacks(BluetoothManager& manager) : manager(manager) {}
+
+  void onConnect(NimBLEServer*) override { manager.onConnect(); }
+
+  void onDisconnect(NimBLEServer*) override {
+    manager.onDisconnect();
+    NimBLEDevice::startAdvertising();
+    LOG_INF("BLE", "Restarted advertising after disconnect");
+  }
+
+ private:
+  BluetoothManager& manager;
+};
+
+class BluetoothManager::CommandCallbacks : public NimBLECharacteristicCallbacks {
+ public:
+  explicit CommandCallbacks(BluetoothManager& manager) : manager(manager) {}
+
+  void onWrite(NimBLECharacteristic* characteristic) override {
+    const auto value = characteristic->getValue();
+    manager.onCharacteristicWrite(value);
+  }
+
+ private:
+  BluetoothManager& manager;
+};
+
+BluetoothManager& BluetoothManager::instance() {
+  static BluetoothManager manager;
+  return manager;
+}
+
+bool BluetoothManager::start(const std::string& deviceName, PayloadCallback callback) {
+  onPayload = callback;
+  if (started) {
+    LOG_INF("BLE", "BluetoothManager already started");
+    return true;
+  }
+
+  LOG_INF("BLE", "Initializing NimBLE for Remote TTS transport");
+  if (WiFi.getMode() != WIFI_OFF) {
+    LOG_INF("BLE", "Disabling WiFi before BLE init (ESP32-C3 coexistence)");
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+    delay(100);
+  }
+
+  NimBLEDevice::init(deviceName);
+  nimbleInitialized = true;
+  NimBLEDevice::setPower(ESP_PWR_LVL_P9);
+  NimBLEDevice::setSecurityAuth(true, false, true);
+
+  server = NimBLEDevice::createServer();
+  server->setCallbacks(new ServerCallbacks(*this));
+
+  service = server->createService(X4_TTS_SERVICE_UUID);
+  commandCharacteristic = service->createCharacteristic(
+      X4_TTS_COMMAND_CHARACTERISTIC_UUID, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
+  commandCharacteristic->setCallbacks(new CommandCallbacks(*this));
+
+  service->start();
+  NimBLEAdvertising* advertising = NimBLEDevice::getAdvertising();
+  advertising->addServiceUUID(X4_TTS_SERVICE_UUID);
+  advertising->setScanResponse(true);
+  advertising->start();
+
+  started = true;
+  LOG_INF("BLE", "BluetoothManager started, advertising service %s", X4_TTS_SERVICE_UUID);
+  return true;
+}
+
+void BluetoothManager::stop() {
+  if (!started) {
+    return;
+  }
+
+  LOG_INF("BLE", "Stopping BluetoothManager");
+  if (nimbleInitialized) {
+    NimBLEDevice::stopAdvertising();
+    NimBLEDevice::deinit(false);
+    nimbleInitialized = false;
+  }
+
+  pendingPayloads.clear();
+  connected = false;
+  started = false;
+  server = nullptr;
+  service = nullptr;
+  commandCharacteristic = nullptr;
+}
+
+void BluetoothManager::poll() {
+  if (!onPayload || pendingPayloads.empty()) {
+    return;
+  }
+
+  auto payloads = std::move(pendingPayloads);
+  pendingPayloads.clear();
+
+  for (const auto& payload : payloads) {
+    onPayload(payload);
+  }
+}
+
+void BluetoothManager::onCharacteristicWrite(const std::string& value) {
+  if (pendingPayloads.size() >= MAX_PENDING_PAYLOADS) {
+    LOG_ERR("BLE", "Dropping BLE payload due to full queue (%u)", static_cast<unsigned int>(MAX_PENDING_PAYLOADS));
+    return;
+  }
+  pendingPayloads.push_back(value);
+  LOG_DBG("BLE", "Received BLE payload (%u bytes)", static_cast<unsigned int>(value.size()));
+}
+
+void BluetoothManager::onConnect() {
+  connected = true;
+  LOG_INF("BLE", "BLE client connected");
+}
+
+void BluetoothManager::onDisconnect() {
+  connected = false;
+  LOG_INF("BLE", "BLE client disconnected");
+}

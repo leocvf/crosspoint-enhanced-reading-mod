@@ -27,6 +27,7 @@
 #include "activities/home/RecentBooksActivity.h"
 #include "activities/network/CrossPointWebServerActivity.h"
 #include "activities/reader/ReaderActivity.h"
+#include "activities/reader/RemoteTTSReaderActivity.h"
 #include "activities/settings/SettingsActivity.h"
 #include "activities/util/FullScreenMessageActivity.h"
 #include "components/UITheme.h"
@@ -246,6 +247,11 @@ void onGoToMyLibraryWithPath(const std::string& path) {
   enterNewActivity(new MyLibraryActivity(renderer, mappedInputManager, onGoHome, onGoToReader, path));
 }
 
+void onGoToRemoteTTSReader() {
+  exitActivity();
+  enterNewActivity(new RemoteTTSReaderActivity(renderer, mappedInputManager, onGoHome));
+}
+
 void onGoToBrowser() {
   exitActivity();
   enterNewActivity(new OpdsBookBrowserActivity(renderer, mappedInputManager, onGoHome));
@@ -254,7 +260,7 @@ void onGoToBrowser() {
 void onGoHome() {
   exitActivity();
   enterNewActivity(new HomeActivity(renderer, mappedInputManager, onGoToReader, onGoToMyLibrary, onGoToRecentBooks,
-                                    onGoToSettings, onGoToFileTransfer, onGoToBrowser));
+                                    onGoToSettings, onGoToFileTransfer, onGoToBrowser, onGoToRemoteTTSReader));
 }
 
 void setupDisplayAndFonts() {
