@@ -37,7 +37,11 @@ void HalDisplay::displayBuffer(HalDisplay::RefreshMode mode, bool turnOffScreen)
   einkDisplay.displayBuffer(convertRefreshMode(mode), turnOffScreen);
 }
 
-void HalDisplay::displayHighlightBuffer(bool turnOffScreen) { einkDisplay.displayHighlightBuffer(turnOffScreen); }
+void HalDisplay::displayHighlightBuffer(bool turnOffScreen) {
+  // Compatibility fallback: some SDK revisions do not expose a dedicated
+  // highlight-buffer flush method. Use a half refresh to keep behavior close.
+  einkDisplay.displayBuffer(EInkDisplay::HALF_REFRESH, turnOffScreen);
+}
 
 void HalDisplay::refreshDisplay(HalDisplay::RefreshMode mode, bool turnOffScreen) {
   einkDisplay.refreshDisplay(convertRefreshMode(mode), turnOffScreen);

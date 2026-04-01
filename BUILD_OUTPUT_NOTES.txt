@@ -1,0 +1,13 @@
+Build artifact policy note
+
+The PR/BPR tooling rejects binary artifacts in commits.
+
+Do NOT commit firmware binaries (e.g., .bin/.elf/.zip) into this repository.
+Instead:
+1) Build locally with PlatformIO.
+2) Collect artifacts from `.pio/build/default/`.
+3) Share artifacts outside git (release assets, cloud link, or CI artifact storage).
+
+Typical output files after a successful build:
+- .pio/build/default/firmware.bin
+- .pio/build/default/firmware.elf
