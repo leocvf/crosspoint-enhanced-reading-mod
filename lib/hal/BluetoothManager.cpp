@@ -82,7 +82,6 @@ bool BluetoothManager::start(const std::string& deviceName, PayloadCallback call
   NimBLEDevice::init(deviceName);
   nimbleInitialized = true;
   NimBLEDevice::setPower(ESP_PWR_LVL_P9);
-  NimBLEDevice::setDefaultPhy(BLE_GAP_LE_PHY_1M_MASK, BLE_GAP_LE_PHY_1M_MASK);
   // Require bonding + MITM protection so Android must pair before writing TTS payloads.
   NimBLEDevice::setSecurityAuth(true, false, true);
   NimBLEDevice::setSecurityIOCap(BLE_HS_IO_DISPLAY_ONLY);
