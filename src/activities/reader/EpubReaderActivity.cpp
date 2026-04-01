@@ -2332,7 +2332,8 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
       EpdFontFamily::globalForceBold = useBold;
       page->render(renderer, SETTINGS.getReaderFontId(), orientedMarginLeft, orientedMarginTop);
       EpdFontFamily::globalForceBold = false;
-      renderStatusBar(orientedMarginRight, orientedMarginBottom, orientedMarginLeft);
+      // Status bar is intentionally not re-rendered here to avoid stale dynamic values
+      // (e.g., battery percent) overlapping between the two FAST_REFRESH passes.
       renderer.displayBuffer(HalDisplay::FAST_REFRESH);
     } else {
       renderer.displayBuffer(HalDisplay::HALF_REFRESH);
