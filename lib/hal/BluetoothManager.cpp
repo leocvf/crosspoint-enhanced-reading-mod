@@ -1,5 +1,6 @@
 #include "BluetoothManager.h"
 
+#include <Arduino.h>
 #include <Logging.h>
 #include <WiFi.h>
 
@@ -109,6 +110,7 @@ bool BluetoothManager::start(const std::string& deviceName, PayloadCallback call
     return false;
   }
 
+  nextAdvertisingRetryAtMs = 0;
   started = true;
   LOG_INF("BLE", "BluetoothManager started, advertising service %s name=%s", X4_TTS_SERVICE_UUID, deviceName.c_str());
   return true;
@@ -130,12 +132,29 @@ void BluetoothManager::stop() {
   connected = false;
   advertisingActive = false;
   started = false;
+  nextAdvertisingRetryAtMs = 0;
   server = nullptr;
   service = nullptr;
   commandCharacteristic = nullptr;
 }
 
 void BluetoothManager::poll() {
+  if (started && !connected && !advertisingActive) {
+    const unsigned long now = millis();
+    if (nextAdvertisingRetryAtMs == 0 || now >= nextAdvertisingRetryAtMs) {
+      const bool restarted = NimBLEDevice::startAdvertising();
+      advertisingActive = restarted;
+      if (restarted) {
+        lastError.clear();
+        nextAdvertisingRetryAtMs = 0;
+        LOG_INF("BLE", "Recovered advertising from poll()");
+      } else {
+        lastError = "Advertising stopped; retry pending";
+        nextAdvertisingRetryAtMs = now + 2000;
+      }
+    }
+  }
+
   if (!onPayload || pendingPayloads.empty()) {
     return;
   }
@@ -159,10 +178,12 @@ void BluetoothManager::onCharacteristicWrite(const std::string& value) {
 
 void BluetoothManager::onConnect() {
   connected = true;
+  advertisingActive = false;
   LOG_INF("BLE", "BLE client connected");
 }
 
 void BluetoothManager::onDisconnect() {
   connected = false;
+  nextAdvertisingRetryAtMs = 0;
   LOG_INF("BLE", "BLE client disconnected");
 }

@@ -41,6 +41,7 @@ class BluetoothManager {
   NimBLECharacteristic* commandCharacteristic = nullptr;
   std::vector<std::string> pendingPayloads;
   static constexpr size_t MAX_PENDING_PAYLOADS = 16;
+  unsigned long nextAdvertisingRetryAtMs = 0;
 
   void onCharacteristicWrite(const std::string& value);
   void onConnect();

@@ -23,6 +23,7 @@ void RemoteTTSReaderActivity::onEnter() {
     setDebugMessage("BLE advertising", "Use Android BLE client to write JSON");
   }
   lastConnectedState = BluetoothManager::instance().isConnected();
+  lastAdvertisingState = BluetoothManager::instance().isAdvertising();
   requestUpdate();
 }
 
@@ -34,13 +35,27 @@ void RemoteTTSReaderActivity::onExit() {
 
 void RemoteTTSReaderActivity::loop() {
   BluetoothManager::instance().poll();
-  const bool connected = BluetoothManager::instance().isConnected();
+  const BluetoothManager& bt = BluetoothManager::instance();
+  const bool connected = bt.isConnected();
+  const bool advertising = bt.isAdvertising();
   if (connected != lastConnectedState) {
     lastConnectedState = connected;
     if (connected) {
       setDebugMessage("BLE connected", "Waiting for load_text");
     } else {
       setDebugMessage("BLE disconnected", "Advertising again");
+    }
+  }
+  if (advertising != lastAdvertisingState) {
+    lastAdvertisingState = advertising;
+    if (!connected) {
+      if (advertising) {
+        setDebugMessage("BLE advertising", "Reconnected server advert");
+      } else {
+        setDebugMessage("BLE stopped", "Retrying advertising...");
+      }
+    } else {
+      requestUpdate();
     }
   }
 
@@ -59,7 +74,7 @@ void RemoteTTSReaderActivity::render(Activity::RenderLock&&) {
   const int screenHeight = renderer.getScreenHeight();
   const int margin = 16;
   const int contentWidth = screenWidth - (margin * 2);
-  const int startY = 54;
+  const int smallLineHeight = renderer.getLineHeight(SMALL_FONT_ID) + 2;
 
   if (state.textDirty) {
     wrapText(contentWidth);
@@ -69,15 +84,52 @@ void RemoteTTSReaderActivity::render(Activity::RenderLock&&) {
   renderer.drawText(UI_12_FONT_ID, margin, 6, "Remote TTS Reader", true, EpdFontFamily::BOLD);
   const BluetoothManager& bt = BluetoothManager::instance();
   const char* bleState = bt.isConnected() ? "Connected" : (bt.isAdvertising() ? "Advertising" : "Stopped");
-  renderer.drawText(SMALL_FONT_ID, margin, 20, bleState, true);
-  if (!debugLine1.empty()) {
-    renderer.drawText(SMALL_FONT_ID, margin, 30, debugLine1.c_str(), true);
-  }
+  int statusY = 20;
+  auto drawWrappedSmall = [&](const std::string& text) {
+    if (text.empty()) {
+      return;
+    }
+
+    std::string line;
+    size_t idx = 0;
+    while (idx < text.size()) {
+      while (idx < text.size() && text[idx] == ' ') {
+        idx++;
+      }
+      size_t wordEnd = idx;
+      while (wordEnd < text.size() && text[wordEnd] != ' ') {
+        wordEnd++;
+      }
+      const std::string word = text.substr(idx, wordEnd - idx);
+      const std::string candidate = line.empty() ? word : (line + " " + word);
+      const bool fits = renderer.getStringWidth(SMALL_FONT_ID, candidate.c_str()) <= contentWidth;
+
+      if (!line.empty() && !fits) {
+        renderer.drawText(SMALL_FONT_ID, margin, statusY, line.c_str(), true);
+        statusY += smallLineHeight;
+        line = word;
+      } else {
+        line = candidate;
+      }
+
+      idx = wordEnd;
+    }
+
+    if (!line.empty()) {
+      renderer.drawText(SMALL_FONT_ID, margin, statusY, line.c_str(), true);
+      statusY += smallLineHeight;
+    }
+  };
+
+  drawWrappedSmall(std::string("BLE: ") + bleState);
+  drawWrappedSmall(debugLine1);
   if (!debugLine2.empty()) {
-    renderer.drawText(SMALL_FONT_ID, margin, 40, debugLine2.c_str(), true);
+    drawWrappedSmall(debugLine2);
   } else if (!bt.getLastError().empty()) {
-    renderer.drawText(SMALL_FONT_ID, margin, 40, bt.getLastError().c_str(), true);
+    drawWrappedSmall(bt.getLastError());
   }
+
+  const int startY = statusY + 6;
 
   const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID) + 2;
   int y = startY;
