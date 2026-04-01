@@ -5,6 +5,7 @@
 
 #include <algorithm>
 
+#include "RemoteTTSConstants.h"
 #include "fontIds.h"
 #include <BluetoothManager.h>
 
@@ -13,9 +14,13 @@ void RemoteTTSReaderActivity::onEnter() {
   LOG_INF("RTTS", "Entering Remote TTS Reader mode");
   state.active = true;
   setDemoContent();
+  lastCommandSummary = "none";
+  commandCount = 0;
+  viewportFirstLine = 0;
+  autoFollowHighlight = true;
 
-  const bool started = BluetoothManager::instance().start(
-      "CrossPoint-X4-TTS", [this](const std::string& payload) { handlePayload(payload); });
+  const bool started = BluetoothManager::instance().start(X4_TTS_DEVICE_NAME,
+                                                          [this](const std::string& payload) { handlePayload(payload); });
   if (!started) {
     LOG_ERR("RTTS", "BluetoothManager failed to start");
     setDebugMessage("BLE start failed", BluetoothManager::instance().getLastError());
@@ -62,6 +67,26 @@ void RemoteTTSReaderActivity::loop() {
   if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
     onExitToHome();
     return;
+  }
+
+  if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
+    autoFollowHighlight = !autoFollowHighlight;
+    setDebugMessage(autoFollowHighlight ? "Auto-follow enabled" : "Auto-follow paused");
+  }
+
+  const bool prevTriggered = mappedInput.wasPressed(MappedInputManager::Button::PageBack) ||
+                             mappedInput.wasPressed(MappedInputManager::Button::Left);
+  const bool nextTriggered = mappedInput.wasPressed(MappedInputManager::Button::PageForward) ||
+                             mappedInput.wasPressed(MappedInputManager::Button::Right);
+
+  if (prevTriggered) {
+    autoFollowHighlight = false;
+    viewportFirstLine = std::max(0, viewportFirstLine - 3);
+    requestUpdate();
+  } else if (nextTriggered) {
+    autoFollowHighlight = false;
+    viewportFirstLine += 3;
+    requestUpdate();
   }
 
   if (state.textDirty || state.highlightDirty) {
@@ -122,18 +147,40 @@ void RemoteTTSReaderActivity::render(Activity::RenderLock&&) {
   };
 
   drawWrappedSmall(std::string("BLE: ") + bleState);
+  drawWrappedSmall(std::string("Device: ") + X4_TTS_DEVICE_NAME);
   drawWrappedSmall(debugLine1);
   if (!debugLine2.empty()) {
     drawWrappedSmall(debugLine2);
   } else if (!bt.getLastError().empty()) {
     drawWrappedSmall(bt.getLastError());
   }
+  drawWrappedSmall(std::string("Commands: ") + std::to_string(commandCount));
+  drawWrappedSmall(std::string("Last cmd: ") + lastCommandSummary);
 
   const int startY = statusY + 6;
 
   const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID) + 2;
+  const int availableHeight = (screenHeight - 18) - startY;
+  const int maxVisibleLines = std::max(1, availableHeight / lineHeight);
+
+  int preferredLine = viewportFirstLine;
+  if (autoFollowHighlight && !wrappedLines.empty()) {
+    for (size_t i = 0; i < wrappedLines.size(); ++i) {
+      const auto& line = wrappedLines[i];
+      const bool intersects = !(state.highlightEnd <= line.start || state.highlightStart >= line.end);
+      if (intersects) {
+        preferredLine = static_cast<int>(i) - (maxVisibleLines / 2);
+        break;
+      }
+    }
+  }
+
+  const int maxFirstLine = std::max(0, static_cast<int>(wrappedLines.size()) - maxVisibleLines);
+  viewportFirstLine = std::clamp(preferredLine, 0, maxFirstLine);
+
   int y = startY;
-  for (const auto& line : wrappedLines) {
+  for (int i = viewportFirstLine; i < static_cast<int>(wrappedLines.size()); ++i) {
+    const auto& line = wrappedLines[i];
     if (y + lineHeight >= screenHeight - 18) {
       break;
     }
@@ -149,7 +196,11 @@ void RemoteTTSReaderActivity::render(Activity::RenderLock&&) {
     y += lineHeight;
   }
 
-  renderer.drawText(SMALL_FONT_ID, margin, screenHeight - 10, "Back: Home");
+  const int totalPages = std::max(1, (static_cast<int>(wrappedLines.size()) + maxVisibleLines - 1) / maxVisibleLines);
+  const int currentPage = std::min(totalPages, (viewportFirstLine / maxVisibleLines) + 1);
+  renderer.drawText(SMALL_FONT_ID, margin, screenHeight - 20,
+                    ("View " + std::to_string(currentPage) + "/" + std::to_string(totalPages)).c_str());
+  renderer.drawText(SMALL_FONT_ID, margin, screenHeight - 10, "OK: Follow  Pg +/-: Scroll  Back: Home");
   renderer.displayBuffer(HalDisplay::FULL_REFRESH);
 
   state.textDirty = false;
@@ -179,6 +230,8 @@ void RemoteTTSReaderActivity::handleCommand(const JsonDocument& doc) {
   }
 
   const std::string type = doc["type"].as<const char*>();
+  commandCount++;
+  lastCommandSummary = type;
 
   if (type == "ping") {
     LOG_INF("RTTS", "Received ping");
@@ -187,12 +240,7 @@ void RemoteTTSReaderActivity::handleCommand(const JsonDocument& doc) {
   }
 
   if (type == "clear") {
-    state.currentDocId.clear();
-    state.text.clear();
-    state.highlightStart = 0;
-    state.highlightEnd = 0;
-    state.textDirty = true;
-    state.highlightDirty = true;
+    clearLoadedContent();
     LOG_INF("RTTS", "Cleared document state");
     setDebugMessage("Command: clear");
     return;
@@ -242,6 +290,9 @@ void RemoteTTSReaderActivity::handleCommand(const JsonDocument& doc) {
     state.highlightStart = start;
     state.highlightEnd = end;
     state.highlightDirty = true;
+    if (autoFollowHighlight) {
+      viewportFirstLine = 0;
+    }
     LOG_INF("RTTS", "Updated position %d-%d", start, end);
     setDebugMessage("Position updated", (std::to_string(start) + "-" + std::to_string(end)).c_str());
     return;
@@ -254,7 +305,10 @@ void RemoteTTSReaderActivity::handleCommand(const JsonDocument& doc) {
 void RemoteTTSReaderActivity::wrapText(int maxWidth) {
   wrappedLines.clear();
   if (state.text.empty()) {
-    wrappedLines.push_back({"Waiting for load_text over BLE...", 0, 0});
+    wrappedLines.push_back({"Ready to receive text from phone app.", 0, 0});
+    wrappedLines.push_back({"1) Connect to BLE device", 0, 0});
+    wrappedLines.push_back({"2) Send load_text command", 0, 0});
+    wrappedLines.push_back({"3) Stream position updates", 0, 0});
     return;
   }
 
@@ -301,12 +355,19 @@ void RemoteTTSReaderActivity::wrapText(int maxWidth) {
 }
 
 void RemoteTTSReaderActivity::setDemoContent() {
-  state.currentDocId = "demo-doc";
-  state.text =
-      "Remote TTS Reader mode is active. This is demo text while BLE starts. Send load_text and position packets "
-      "from Android to replace this content.";
-  state.highlightStart = 36;
-  state.highlightEnd = 80;
+  state.currentDocId.clear();
+  state.text.clear();
+  state.highlightStart = 0;
+  state.highlightEnd = 0;
+  state.textDirty = true;
+  state.highlightDirty = true;
+}
+
+void RemoteTTSReaderActivity::clearLoadedContent() {
+  state.currentDocId.clear();
+  state.text.clear();
+  state.highlightStart = 0;
+  state.highlightEnd = 0;
   state.textDirty = true;
   state.highlightDirty = true;
 }

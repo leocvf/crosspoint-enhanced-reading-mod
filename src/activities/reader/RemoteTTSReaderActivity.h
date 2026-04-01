@@ -41,6 +41,10 @@ class RemoteTTSReaderActivity : public Activity {
   const std::function<void()> onExitToHome;
   std::string debugLine1;
   std::string debugLine2;
+  std::string lastCommandSummary;
+  uint32_t commandCount = 0;
+  int viewportFirstLine = 0;
+  bool autoFollowHighlight = true;
   bool lastConnectedState = false;
   bool lastAdvertisingState = false;
 
@@ -48,5 +52,6 @@ class RemoteTTSReaderActivity : public Activity {
   void handleCommand(const JsonDocument& doc);
   void wrapText(int maxWidth);
   void setDemoContent();
+  void clearLoadedContent();
   void setDebugMessage(const std::string& line1, const std::string& line2 = "");
 };
