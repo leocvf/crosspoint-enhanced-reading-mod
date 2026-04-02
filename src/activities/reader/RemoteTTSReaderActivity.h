@@ -105,8 +105,8 @@ class RemoteTTSReaderActivity : public Activity {
   int pendingLegacyEnd = 0;
 
   static constexpr size_t MAX_PENDING_CHUNKS = 96;
-  static constexpr size_t MAX_STREAM_BYTES = 24 * 1024;
-  static constexpr size_t MAX_COMMITTED_BYTES = 16 * 1024;
+  static constexpr size_t MAX_STREAM_BYTES = 64 * 1024;
+  static constexpr size_t MAX_COMMITTED_BYTES = 48 * 1024;
   /** Slightly faster than full refresh cadence; still eases e-ink flash on rapid highlight updates. */
   static constexpr unsigned long RENDER_COALESCE_MS = 100;
 

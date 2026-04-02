@@ -362,9 +362,6 @@ void RemoteTTSReaderActivity::handleCommand(const JsonDocument& doc) {
       }
       mapHighlightToRenderWindow(start, end);
       renderPointerGlobal = start;
-      if (autoFollowHighlight) {
-        viewportFirstLine = 0;
-      }
       return;
     }
 
@@ -426,9 +423,6 @@ void RemoteTTSReaderActivity::applyPendingLegacyPosition(unsigned long nowMs, bo
   state.highlightDirty = true;
   hasPendingLegacyPosition = false;
   renderPointerGlobal = state.highlightStart;
-  if (autoFollowHighlight) {
-    viewportFirstLine = 0;
-  }
 }
 
 void RemoteTTSReaderActivity::logLegacyTelemetryThrottled(unsigned long nowMs) {

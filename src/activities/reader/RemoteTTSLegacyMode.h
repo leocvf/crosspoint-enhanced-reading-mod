@@ -25,7 +25,7 @@ class RemoteTTSLegacyMode {
     Counters counters;
   };
 
-  static constexpr size_t MAX_DOC_BYTES = 16 * 1024;
+  static constexpr size_t MAX_DOC_BYTES = 64 * 1024;
   static constexpr unsigned long DEFAULT_FINALIZE_MS = 500;
 
   explicit RemoteTTSLegacyMode(unsigned long finalizeMs = DEFAULT_FINALIZE_MS) : finalizeDelayMs(finalizeMs) {}
