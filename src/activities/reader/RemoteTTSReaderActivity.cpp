@@ -197,9 +197,9 @@ void RemoteTTSReaderActivity::render(Activity::RenderLock&&) {
 
     const bool intersects = !(state.highlightEnd <= line.start || state.highlightStart >= line.end);
     if (intersects) {
-      // Invert for highlight
-      renderer.fillRect(margin - 2, y - 1, contentWidth + 4, bodyLineHeight + 1, false);
-      renderer.drawText(UI_10_FONT_ID, margin, y, line.text.c_str(), false);
+      // Dither for highlight (LightGray background with black text)
+      renderer.fillRectDither(margin - 2, y - 1, contentWidth + 4, bodyLineHeight + 1, LightGray);
+      renderer.drawText(UI_10_FONT_ID, margin, y, line.text.c_str(), true);
     } else {
       renderer.drawText(UI_10_FONT_ID, margin, y, line.text.c_str(), true);
     }
@@ -626,7 +626,8 @@ void RemoteTTSReaderActivity::enforceStreamMemoryBudget() {
     pendingBytes += kv.second.text.size();
   }
 
-  while (committedText.size() > MAX_COMMITTED_BYTES || (pendingBytes + committedText.size()) > MAX_STREAM_BYTES) {
+  // Sliding window eviction from committedText
+  while (!committedText.empty() && (committedText.size() > MAX_COMMITTED_BYTES || (pendingBytes + committedText.size()) > MAX_STREAM_BYTES)) {
     const size_t evictBytes = std::min<size_t>(128, committedText.size());
     committedText.erase(0, evictBytes);
     committedBaseOffset += static_cast<int>(evictBytes);
@@ -635,6 +636,14 @@ void RemoteTTSReaderActivity::enforceStreamMemoryBudget() {
       state.highlightEnd = std::max(state.highlightEnd, state.highlightStart);
       state.highlightDirty = true;
     }
+  }
+
+  // If we are STILL over budget but committedText is empty, drop pending chunks
+  while (!pendingChunks.empty() && pendingBytes > MAX_STREAM_BYTES) {
+    auto it = pendingChunks.begin();
+    pendingBytes -= it->second.text.size();
+    pendingChunks.erase(it);
+    stats.gapEvents++;
   }
 }
 
