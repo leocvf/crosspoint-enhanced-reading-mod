@@ -42,7 +42,6 @@ void RemoteTTSReaderActivity::onEnter() {
   lastConnectedState = BluetoothManager::instance().isConnected();
   lastAdvertisingState = BluetoothManager::instance().isAdvertising();
   
-  // Force a clean background setup on first render
   state.textDirty = true;
   requestUpdate();
 }
@@ -52,7 +51,7 @@ void RemoteTTSReaderActivity::onExit() {
   BluetoothManager::instance().stop();
   if (renderer.hasBwBufferStored()) {
     renderer.restoreBwBuffer(); 
-    renderer.displayBuffer(HalDisplay::HALF_REFRESH); // Clean exit blink
+    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
   }
   Activity::onExit();
 }
@@ -61,7 +60,6 @@ void RemoteTTSReaderActivity::loop() {
   BluetoothManager::instance().poll();
   const BluetoothManager& bt = BluetoothManager::instance();
   const bool connected = bt.isConnected();
-  const bool advertising = bt.isAdvertising();
   
   if (connected != lastConnectedState) {
     lastConnectedState = connected;
@@ -76,8 +74,6 @@ void RemoteTTSReaderActivity::loop() {
   if (!streamMode && legacyMode.tick(millis())) {
     state.currentDocId = legacyMode.docId();
     state.text = legacyMode.text();
-    state.highlightStart = 0;
-    state.highlightEnd = 0;
     state.textDirty = true;
     state.highlightDirty = true;
   }
@@ -90,7 +86,7 @@ void RemoteTTSReaderActivity::loop() {
 
   if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
     autoFollowHighlight = !autoFollowHighlight;
-    state.highlightDirty = true; // Refresh UI to show status change
+    state.highlightDirty = true;
   }
 
   const bool prevTriggered = mappedInput.wasPressed(MappedInputManager::Button::PageBack) ||
@@ -100,13 +96,13 @@ void RemoteTTSReaderActivity::loop() {
 
   if (prevTriggered) {
     autoFollowHighlight = false;
-    viewportFirstLine = std::max(0, viewportFirstLine - 3);
-    state.textDirty = true; // Viewport moved, need full re-render
+    viewportFirstLine = std::max(0, viewportFirstLine - 5);
+    state.textDirty = true;
     requestUpdate();
   } else if (nextTriggered) {
     autoFollowHighlight = false;
-    viewportFirstLine += 3;
-    state.textDirty = true; // Viewport moved, need full re-render
+    viewportFirstLine += 5;
+    state.textDirty = true;
     requestUpdate();
   }
 
@@ -122,42 +118,51 @@ void RemoteTTSReaderActivity::render(Activity::RenderLock&&) {
   const int contentWidth = screenWidth - (margin * 2);
   const int smallLineHeight = renderer.getLineHeight(SMALL_FONT_ID) + 2;
   const int fontId = BOOKERLY_18_FONT_ID;
-
-  const bool needsFullRedraw = state.textDirty || !renderer.hasBwBufferStored() || consecutiveFastRefreshes >= 100;
+  const int bodyLineHeight = renderer.getLineHeight(fontId) + 4;
 
   if (state.textDirty) {
     wrapText(contentWidth);
   }
 
-  if (needsFullRedraw) {
-    renderer.clearScreen();
+  // Determine available lines
+  const int startY = 22 + 8 + smallLineHeight + 4;
+  const int availableHeight = (screenHeight - 24) - startY;
+  const int maxVisibleLines = std::max(1, availableHeight / bodyLineHeight);
 
-    // Top Status Header - Static part
-    renderer.drawText(UI_12_FONT_ID, margin, 4, "Stream Reader", true, EpdFontFamily::BOLD);
-    
-    // Health Bar Outline
-    renderer.drawRect(margin, 22, contentWidth, 4, true);
+  // --- Auto-Scrolling Logic ---
+  if (autoFollowHighlight && !wrappedLines.empty()) {
+    int highlightLineIdx = -1;
+    for (size_t i = 0; i < wrappedLines.size(); ++i) {
+      const auto& line = wrappedLines[i];
+      if (!(state.highlightEnd <= line.start || state.highlightStart >= line.end)) {
+        highlightLineIdx = static_cast<int>(i);
+        break;
+      }
+    }
 
-    const int bodyLineHeight = renderer.getLineHeight(fontId) + 4;
-    const int startY = 22 + 8 + smallLineHeight + 4;
-    const int availableHeight = (screenHeight - 24) - startY;
-    const int maxVisibleLines = std::max(1, availableHeight / bodyLineHeight);
-
-    // Calculate viewport but DON'T draw highlights yet
-    int preferredLine = viewportFirstLine;
-    if (autoFollowHighlight && !wrappedLines.empty()) {
-      for (size_t i = 0; i < wrappedLines.size(); ++i) {
-        const auto& line = wrappedLines[i];
-        if (!(state.highlightEnd <= line.start || state.highlightStart >= line.end)) {
-          preferredLine = static_cast<int>(i) - (maxVisibleLines / 3);
-          break;
+    if (highlightLineIdx != -1) {
+      // Check if highlight is outside current viewport or near bottom
+      const int bufferLines = 1; 
+      if (highlightLineIdx < viewportFirstLine || highlightLineIdx >= (viewportFirstLine + maxVisibleLines - bufferLines)) {
+        int targetViewport = highlightLineIdx - (maxVisibleLines / 4);
+        const int maxFirstLine = std::max(0, static_cast<int>(wrappedLines.size()) - maxVisibleLines);
+        targetViewport = std::clamp(targetViewport, 0, maxFirstLine);
+        
+        if (targetViewport != viewportFirstLine) {
+          viewportFirstLine = targetViewport;
+          state.textDirty = true; // Force full redraw because text is shifting
         }
       }
     }
-    const int maxFirstLine = std::max(0, static_cast<int>(wrappedLines.size()) - maxVisibleLines);
-    viewportFirstLine = std::clamp(preferredLine, 0, maxFirstLine);
+  }
 
-    // Draw clean text (no highlights)
+  const bool needsFullRedraw = state.textDirty || !renderer.hasBwBufferStored() || consecutiveFastRefreshes >= 100;
+
+  if (needsFullRedraw) {
+    renderer.clearScreen();
+    renderer.drawText(UI_12_FONT_ID, margin, 4, "Stream Reader", true, EpdFontFamily::BOLD);
+    renderer.drawRect(margin, 22, contentWidth, 4, true);
+
     int y = startY;
     for (int i = viewportFirstLine; i < static_cast<int>(wrappedLines.size()); ++i) {
       const auto& line = wrappedLines[i];
@@ -166,15 +171,13 @@ void RemoteTTSReaderActivity::render(Activity::RenderLock&&) {
       y += bodyLineHeight;
     }
 
-    // Capture this clean background
     renderer.storeBwBuffer();
     consecutiveFastRefreshes = 0;
   } else {
-    // Fast path: restore the clean text background
     renderer.restoreBwBufferKeep();
   }
 
-  // Now draw ONLY the dynamic parts on top of the clean background
+  // --- Dynamic Overlay ---
   const BluetoothManager& bt = BluetoothManager::instance();
   std::string connStatus = bt.isConnected() ? "LINK OK" : "LINK LOST";
   renderer.drawText(SMALL_FONT_ID, screenWidth - margin - renderer.getTextWidth(SMALL_FONT_ID, connStatus.c_str()), 6, connStatus.c_str(), true);
@@ -184,17 +187,10 @@ void RemoteTTSReaderActivity::render(Activity::RenderLock&&) {
     renderer.fillRect(margin, 22, fillW, 4, true);
   }
 
-  int statusY = 22 + 8;
   char buf[64];
   snprintf(buf, sizeof(buf), "Buf: %u%% | Chunks: %u", stats.lastBufferFillPct, stats.chunksReceived);
-  renderer.drawText(SMALL_FONT_ID, margin, statusY, buf, true);
+  renderer.drawText(SMALL_FONT_ID, margin, 22 + 8, buf, true);
 
-  const int bodyLineHeight = renderer.getLineHeight(fontId) + 4;
-  const int startY = statusY + smallLineHeight + 4;
-  const int availableHeight = (screenHeight - 24) - startY;
-  const int maxVisibleLines = std::max(1, availableHeight / bodyLineHeight);
-
-  // Render Highlight
   int y = startY;
   for (int i = viewportFirstLine; i < static_cast<int>(wrappedLines.size()); ++i) {
     const auto& line = wrappedLines[i];
@@ -207,12 +203,11 @@ void RemoteTTSReaderActivity::render(Activity::RenderLock&&) {
     y += bodyLineHeight;
   }
 
-  snprintf(buf, sizeof(buf), "Page %d | %s", (viewportFirstLine / 5) + 1, streamMode ? "STREAM" : "LEGACY");
+  snprintf(buf, sizeof(buf), "Page %d | %s", (viewportFirstLine / maxVisibleLines) + 1, streamMode ? "STREAM" : "LEGACY");
   renderer.drawText(SMALL_FONT_ID, margin, screenHeight - 12, buf, true);
 
-  // True Partial Refresh
   if (!needsFullRedraw) {
-    renderer.displayHighlightBuffer(); // FAST_REFRESH
+    renderer.displayHighlightBuffer();
     consecutiveFastRefreshes++;
   } else {
     renderer.displayBuffer(HalDisplay::HALF_REFRESH);
@@ -299,7 +294,7 @@ void RemoteTTSReaderActivity::handleStreamStart(const JsonDocument& doc) {
 }
 
 void RemoteTTSReaderActivity::handleStreamChunk(const JsonDocument& doc) {
-  uint32_t seq = 0; int offset = 0;
+  uint32_t seq = 0;
   if (!RemoteTTSPacketFieldReaders::readUIntAlias(doc, "seq", "sequenceId", seq)) return;
   const char* chunkText = doc["text"].as<const char*>();
   if (!chunkText || seenChunkSeq.count(seq) || pendingChunks.count(seq)) return;
@@ -307,7 +302,7 @@ void RemoteTTSReaderActivity::handleStreamChunk(const JsonDocument& doc) {
   pendingChunks[seq] = chunk;
   stats.chunksReceived++;
   enforceStreamMemoryBudget();
-  state.highlightDirty = true; // Update health bar only
+  state.highlightDirty = true;
 }
 
 void RemoteTTSReaderActivity::handleStreamCommit(const JsonDocument& doc) {
@@ -327,6 +322,7 @@ void RemoteTTSReaderActivity::handleStreamCommit(const JsonDocument& doc) {
   if (changed) {
     state.text = committedText;
     state.renderWindowEnd = committedBaseOffset + committedText.size();
+    state.textDirty = true; // MUST update wrapped lines when text grows
     state.highlightDirty = true; 
   }
 }
@@ -346,8 +342,8 @@ void RemoteTTSReaderActivity::commitChunk(const StreamChunk& chunk) {
 
 void RemoteTTSReaderActivity::enforceStreamMemoryBudget() {
   while (committedText.size() > MAX_COMMITTED_BYTES) {
-    committedText.erase(0, 256);
-    committedBaseOffset += 256;
+    committedText.erase(0, 512);
+    committedBaseOffset += 512;
   }
 }
 
