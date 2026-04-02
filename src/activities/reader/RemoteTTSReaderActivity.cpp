@@ -47,6 +47,7 @@ void RemoteTTSReaderActivity::onEnter() {
 void RemoteTTSReaderActivity::onExit() {
   LOG_INF("RTTS", "Exiting Remote TTS Reader mode");
   BluetoothManager::instance().stop();
+  renderer.freeBwBufferChunks();
   Activity::onExit();
 }
 
@@ -131,31 +132,45 @@ void RemoteTTSReaderActivity::render(Activity::RenderLock&&) {
   const int smallLineHeight = renderer.getLineHeight(SMALL_FONT_ID) + 2;
   const int fontId = BOOKERLY_18_FONT_ID;
 
-  if (state.textDirty) {
+  const bool textChanged = state.textDirty;
+  const bool onlyHighlight = state.highlightDirty && !textChanged;
+
+  if (textChanged) {
     wrapText(contentWidth);
   }
 
-  renderer.clearScreen();
+  // --- Background/Static Elements ---
+  // Only redraw background if text changed OR we need a fresh clean slate
+  if (textChanged || consecutiveFastRefreshes >= 50 || !renderer.hasBwBufferStored()) {
+    renderer.clearScreen();
 
-  // --- Top Status Header ---
-  renderer.drawText(UI_12_FONT_ID, margin, 4, "Stream Reader", true, EpdFontFamily::BOLD);
+    // Top Status Header
+    renderer.drawText(UI_12_FONT_ID, margin, 4, "Stream Reader", true, EpdFontFamily::BOLD);
+    const BluetoothManager& bt = BluetoothManager::instance();
+    std::string connStatus = bt.isConnected() ? "LINK OK" : "LINK LOST";
+    renderer.drawText(SMALL_FONT_ID, screenWidth - margin - renderer.getTextWidth(SMALL_FONT_ID, connStatus.c_str()), 6, connStatus.c_str(), true);
 
-  const BluetoothManager& bt = BluetoothManager::instance();
-  std::string connStatus = bt.isConnected() ? "LINK OK" : "LINK LOST";
-  renderer.drawText(SMALL_FONT_ID, screenWidth - margin - renderer.getTextWidth(SMALL_FONT_ID, connStatus.c_str()), 6, connStatus.c_str(), true);
+    // Health Bar Outline
+    renderer.drawRect(margin, 22, contentWidth, 4, true);
 
-  // --- Stream Health Bar ---
-  const int barH = 4;
-  const int barY = 22;
-  renderer.drawRect(margin, barY, contentWidth, barH, true);
-  if (stats.lastBufferFillPct > 0) {
-    int fillW = (contentWidth * std::min<uint32_t>(100, stats.lastBufferFillPct)) / 100;
-    renderer.fillRect(margin, barY, fillW, barH, true);
+    // Save this state as our clean background (text without highlight)
+    renderer.storeBwBuffer();
+    consecutiveFastRefreshes = 0;
+  } else {
+    // Restore clean background (text with NO highlight)
+    renderer.restoreBwBufferKeep();
   }
 
-  int statusY = barY + 8;
-  const int bodyLineHeight = renderer.getLineHeight(fontId) + 4;
+  // --- Dynamic Elements (Buffer bar, metrics, highlight) ---
+  // These are drawn on top of the restored clean background
 
+  // Fill Health Bar
+  if (stats.lastBufferFillPct > 0) {
+    int fillW = (contentWidth * std::min<uint32_t>(100, stats.lastBufferFillPct)) / 100;
+    renderer.fillRect(margin, 22, fillW, 4, true);
+  }
+
+  int statusY = 22 + 8;
   char buf[64];
   snprintf(buf, sizeof(buf), "Buf: %u%% | Chunks: %u | Miss: %u",
            stats.lastBufferFillPct, stats.chunksReceived, stats.highlightMisses);
@@ -167,11 +182,12 @@ void RemoteTTSReaderActivity::render(Activity::RenderLock&&) {
     statusY += smallLineHeight;
   }
 
+  const int bodyLineHeight = renderer.getLineHeight(fontId) + 4;
   const int startY = statusY + 4;
   const int availableHeight = (screenHeight - 24) - startY;
   const int maxVisibleLines = std::max(1, availableHeight / bodyLineHeight);
 
-  // --- Text Rendering ---
+  // Calculate viewport
   int preferredLine = viewportFirstLine;
   if (autoFollowHighlight && !wrappedLines.empty()) {
     for (size_t i = 0; i < wrappedLines.size(); ++i) {
@@ -183,20 +199,17 @@ void RemoteTTSReaderActivity::render(Activity::RenderLock&&) {
       }
     }
   }
-
   const int maxFirstLine = std::max(0, static_cast<int>(wrappedLines.size()) - maxVisibleLines);
   viewportFirstLine = std::clamp(preferredLine, 0, maxFirstLine);
 
+  // Render Text & Highlight
   int y = startY;
   for (int i = viewportFirstLine; i < static_cast<int>(wrappedLines.size()); ++i) {
     const auto& line = wrappedLines[i];
-    if (y + bodyLineHeight >= screenHeight - 22) {
-      break;
-    }
+    if (y + bodyLineHeight >= screenHeight - 22) break;
 
     const bool intersects = !(state.highlightEnd <= line.start || state.highlightStart >= line.end);
     if (intersects) {
-      // Dither for highlight (DarkGray background with black text)
       renderer.fillRectDither(margin - 2, y - 1, contentWidth + 4, bodyLineHeight + 1, DarkGray);
       renderer.drawText(fontId, margin, y, line.text.c_str(), true);
     } else {
@@ -205,46 +218,35 @@ void RemoteTTSReaderActivity::render(Activity::RenderLock&&) {
     y += bodyLineHeight;
   }
 
-  // --- Footer ---
+  // Footer
   const int totalPages = std::max(1, (static_cast<int>(wrappedLines.size()) + maxVisibleLines - 1) / maxVisibleLines);
   const int currentPage = std::min(totalPages, (viewportFirstLine / maxVisibleLines) + 1);
   snprintf(buf, sizeof(buf), "Page %d/%d [%s]", currentPage, totalPages, streamMode ? "STREAM" : "LEGACY");
   renderer.drawText(SMALL_FONT_ID, margin, screenHeight - 12, buf, true);
 
-  // --- Smart Refresh Logic ---
-  const unsigned long now = millis();
-  const bool onlyHighlightDirty = state.highlightDirty && !state.textDirty;
-  
-  if (onlyHighlightDirty && consecutiveFastRefreshes < 50) {
-    renderer.displayHighlightBuffer();
+  // --- Display Refresh ---
+  if (onlyHighlight && consecutiveFastRefreshes < 50) {
+    renderer.displayHighlightBuffer(); // Uses fixed FAST_REFRESH
     consecutiveFastRefreshes++;
   } else {
     renderer.displayBuffer(HalDisplay::HALF_REFRESH);
     consecutiveFastRefreshes = 0;
   }
 
-  lastRenderMs = now;
-  lastRenderWasFullRefresh = (consecutiveFastRefreshes == 0);
-
+  lastRenderMs = millis();
   state.textDirty = false;
   state.highlightDirty = false;
 }
 
 void RemoteTTSReaderActivity::handlePayload(const std::string& payload) {
-  if (payload.empty()) {
-    return;
-  }
-
+  if (payload.empty()) return;
   if (frameParser.push(payload) == RemoteTTSFrameParser::PushResult::OVERFLOW) {
     legacyMode.mutableCounters().truncatedPayload++;
     legacyMode.mutableCounters().droppedFrames++;
     return;
   }
-
   std::string frame;
-  while (frameParser.popFrame(frame)) {
-    processJsonFrame(frame);
-  }
+  while (frameParser.popFrame(frame)) processJsonFrame(frame);
 }
 
 void RemoteTTSReaderActivity::processJsonFrame(const std::string& frame) {
@@ -253,54 +255,34 @@ void RemoteTTSReaderActivity::processJsonFrame(const std::string& frame) {
     legacyMode.mutableCounters().droppedFrames++;
     return;
   }
-
   JsonDocument doc;
-  auto err = deserializeJson(doc, frame);
-  if (err) {
+  if (deserializeJson(doc, frame)) {
     stats.malformedPackets++;
     legacyMode.mutableCounters().parseErrors++;
     legacyMode.mutableCounters().droppedFrames++;
     return;
   }
-
   handleCommand(doc);
 }
 
 void RemoteTTSReaderActivity::handleCommand(const JsonDocument& doc) {
   if (!doc["type"].is<const char*>()) {
     stats.malformedPackets++;
-    LOG_ERR("RTTS", "Rejected command: missing type");
-    setDebugMessage("Rejected command", "Missing type");
     return;
   }
-
   const std::string type = doc["type"].as<const char*>();
   commandCount++;
   lastCommandSummary = type;
 
-  if (type == "ping") {
-    LOG_INF("RTTS", "Received ping");
-    setDebugMessage("Command: ping");
-    return;
-  }
-
+  if (type == "ping") return;
   if (type == "clear") {
     clearLoadedContent();
     legacyMode.clear();
     resetStreamingSession("clear");
-    LOG_INF("RTTS", "Cleared document state");
-    setDebugMessage("Command: clear");
     return;
   }
-
   if (type == "load_text") {
-    if (!doc["docId"].is<const char*>() || !doc["text"].is<const char*>()) {
-      stats.malformedPackets++;
-      LOG_ERR("RTTS", "Rejected load_text: missing docId/text");
-      setDebugMessage("Rejected load_text", "Missing docId/text");
-      return;
-    }
-
+    if (!doc["docId"].is<const char*>() || !doc["text"].is<const char*>()) return;
     streamMode = false;
     legacyMode.onLoadText(doc["docId"].as<const char*>(), doc["text"].as<const char*>(), millis());
     if (legacyMode.consumeDocReadyDirty()) {
@@ -311,85 +293,37 @@ void RemoteTTSReaderActivity::handleCommand(const JsonDocument& doc) {
       state.textDirty = true;
       state.highlightDirty = true;
       renderPointerGlobal = 0;
-      LOG_INF("RTTS", "Loaded docId=%s chars=%d", state.currentDocId.c_str(), state.text.size());
-      setDebugMessage("Loaded text", ("docId=" + state.currentDocId).c_str());
     }
     return;
   }
-
   if (type == "position") {
-    if (!doc["docId"].is<const char*>() || !doc["start"].is<int>() || !doc["end"].is<int>()) {
-      stats.malformedPackets++;
-      LOG_ERR("RTTS", "Rejected position: missing fields");
-      setDebugMessage("Rejected position", "Missing docId/start/end");
-      return;
-    }
-
+    if (!doc["docId"].is<const char*>() || !doc["start"].is<int>() || !doc["end"].is<int>()) return;
     const std::string docId = doc["docId"].as<const char*>();
     int start = doc["start"].as<int>();
     int end = doc["end"].as<int>();
-
     if (streamMode) {
-      if (start > end) {
-        std::swap(start, end);
-      }
+      if (start > end) std::swap(start, end);
       mapHighlightToRenderWindow(start, end);
       renderPointerGlobal = start;
       return;
     }
-
-    const bool changed = legacyMode.onPosition(docId, start, end);
-    if (!changed) {
-      if (docId != state.currentDocId && (millis() - lastDocMismatchLogMs) >= 1000) {
-        lastDocMismatchLogMs = millis();
-        LOG_INF("RTTS", "Ignored position for docId=%s current=%s", docId.c_str(), state.currentDocId.c_str());
-      }
-      return;
-    }
-
+    if (!legacyMode.onPosition(docId, start, end)) return;
     pendingLegacyStart = legacyMode.highlightStart();
     pendingLegacyEnd = legacyMode.highlightEnd();
     hasPendingLegacyPosition = true;
     applyPendingLegacyPosition(millis(), true);
     return;
   }
-
-  if (type == "stream_start") {
-    handleStreamStart(doc);
-    return;
-  }
-
-  if (type == "stream_chunk") {
-    handleStreamChunk(doc);
-    return;
-  }
-
-  if (type == "stream_commit") {
-    handleStreamCommit(doc);
-    return;
-  }
-
-  if (type == "stream_seek") {
-    handleStreamSeek(doc);
-    return;
-  }
-
-  if (type == "stream_end") {
-    handleStreamEnd(doc);
-    return;
-  }
-
-  LOG_ERR("RTTS", "Rejected command: unknown type %s", type.c_str());
-  setDebugMessage("Rejected command", ("Unknown type: " + type).c_str());
+  if (type == "stream_start") { handleStreamStart(doc); return; }
+  if (type == "stream_chunk") { handleStreamChunk(doc); return; }
+  if (type == "stream_commit") { handleStreamCommit(doc); return; }
+  if (type == "stream_seek") { handleStreamSeek(doc); return; }
+  if (type == "stream_end") { handleStreamEnd(doc); return; }
 }
 
 void RemoteTTSReaderActivity::applyPendingLegacyPosition(unsigned long nowMs, bool force) {
-  if (!hasPendingLegacyPosition) {
-    return;
-  }
-  if (!force && (nowMs - lastLegacyPositionApplyMs) < LEGACY_POSITION_RENDER_INTERVAL_MS) {
-    return;
-  }
+  if (!hasPendingLegacyPosition) return;
+  if (!force && (nowMs - lastLegacyPositionApplyMs) < LEGACY_POSITION_RENDER_INTERVAL_MS) return;
   lastLegacyPositionApplyMs = nowMs;
   state.highlightStart = pendingLegacyStart;
   state.highlightEnd = pendingLegacyEnd;
@@ -399,24 +333,14 @@ void RemoteTTSReaderActivity::applyPendingLegacyPosition(unsigned long nowMs, bo
 }
 
 void RemoteTTSReaderActivity::logLegacyTelemetryThrottled(unsigned long nowMs) {
-  if (nowMs - lastTelemetryLogMs < 1000) {
-    return;
-  }
+  if (nowMs - lastTelemetryLogMs < 1000) return;
   lastTelemetryLogMs = nowMs;
   const auto snap = legacyMode.snapshot();
-  LOG_INF("RTTS", "legacy status activeDocId=%s docLen=%u readyState=%u lastPosition=%d-%d parseErr=%u drop=%u",
-          snap.activeDocId->c_str(), static_cast<unsigned int>(snap.docLen), static_cast<unsigned int>(snap.state),
-          snap.start, snap.end, static_cast<unsigned int>(snap.counters.parseErrors),
-          static_cast<unsigned int>(snap.counters.droppedFrames));
+  LOG_INF("RTTS", "legacy status activeDocId=%s docLen=%u", snap.activeDocId->c_str(), static_cast<unsigned int>(snap.docLen));
 }
 
 void RemoteTTSReaderActivity::handleStreamStart(const JsonDocument& doc) {
-  if (!doc["sessionId"].is<const char*>() || !doc["docId"].is<const char*>()) {
-    stats.malformedPackets++;
-    setDebugMessage("Rejected stream_start", "Missing sessionId/docId");
-    return;
-  }
-
+  if (!doc["sessionId"].is<const char*>() || !doc["docId"].is<const char*>()) return;
   streamMode = true;
   streamSessionId = doc["sessionId"].as<const char*>();
   streamDocId = doc["docId"].as<const char*>();
@@ -430,18 +354,10 @@ void RemoteTTSReaderActivity::handleStreamStart(const JsonDocument& doc) {
   pendingChunks.clear();
   seenChunkSeq.clear();
   stats = {};
-  renderPointerGlobal = 0;
+  renderPointerGlobal = std::max(0, doc["startOffset"].is<int>() ? doc["startOffset"].as<int>() : 0);
   state.text.clear();
   state.textDirty = true;
   state.highlightDirty = true;
-  renderPointerGlobal = std::max(0, doc["startOffset"].is<int>() ? doc["startOffset"].as<int>() : 0);
-  LOG_INF("RTTS", "stream_start session=%s docId=%s startSeq=%u ver=%d totalChars=%d", streamSessionId.c_str(),
-          streamDocId.c_str(), static_cast<unsigned int>(streamStartSeq),
-          doc["streamVersion"].is<int>() ? doc["streamVersion"].as<int>() : 1,
-          doc["totalChars"].is<int>() ? doc["totalChars"].as<int>() : -1);
-  LOG_DBG("RTTS", "stream_start baseline startSeq=%u highestInit=%d firstCommitTarget=%u",
-          static_cast<unsigned int>(streamStartSeq), static_cast<int>(highestContiguousSeq),
-          static_cast<unsigned int>(RemoteTTSStreamSequencer::nextExpectedSeq(highestContiguousSeq)));
   setDebugMessage("stream_start", streamSessionId);
 }
 
@@ -452,121 +368,61 @@ void RemoteTTSReaderActivity::handleStreamChunk(const JsonDocument& doc) {
   const bool hasOffset = RemoteTTSPacketFieldReaders::readIntAlias(doc, "offset", "start", offset);
   if (!doc["sessionId"].is<const char*>() || !hasSeq || !hasOffset || !doc["text"].is<const char*>()) {
     stats.malformedPackets++;
-    if (!hasSeq && !hasOffset) {
-      setDebugMessage("Rejected stream_chunk", "Missing (seq|sequenceId) and (offset|start)");
-    } else if (!hasSeq) {
-      setDebugMessage("Rejected stream_chunk", "Missing seq/sequenceId");
-    } else if (!hasOffset) {
-      setDebugMessage("Rejected stream_chunk", "Missing offset/start");
-    } else {
-      setDebugMessage("Rejected stream_chunk", "Missing sessionId/text");
-    }
     return;
   }
-
   const char* chunkText = doc["text"].as<const char*>();
-  if (!chunkText) {
-    stats.malformedPackets++;
-    setDebugMessage("Rejected stream_chunk", "Null text");
-    return;
-  }
-
+  if (!chunkText) return;
   const std::string session = doc["sessionId"].as<const char*>();
-  if (!streamMode || session != streamSessionId) {
-    LOG_INF("RTTS", "Ignored stream_chunk for inactive session=%s", session.c_str());
-    return;
-  }
-
+  if (!streamMode || session != streamSessionId) return;
   if (seenChunkSeq.find(seq) != seenChunkSeq.end() || pendingChunks.find(seq) != pendingChunks.end()) {
     stats.duplicateChunks++;
     emitAckLogHook("duplicate chunk");
     return;
   }
-
   StreamChunk chunk;
   chunk.seq = seq;
   chunk.offset = offset;
   chunk.text = chunkText;
   chunk.receivedAtMs = millis();
-  if (doc["reason"].is<const char*>()) {
-    LOG_DBG("RTTS", "Chunk seq=%u reason=%s", static_cast<unsigned int>(seq), doc["reason"].as<const char*>());
-  }
-  if (doc["checksum"].is<uint32_t>() || doc["checksum"].is<const char*>()) {
-    LOG_DBG("RTTS", "Chunk seq=%u includes checksum metadata", static_cast<unsigned int>(seq));
-  }
-
   pendingChunks[seq] = chunk;
   stats.chunksReceived++;
   if (pendingChunks.size() > MAX_PENDING_CHUNKS) {
     pendingChunks.erase(pendingChunks.begin());
     stats.gapEvents++;
   }
-
   enforceStreamMemoryBudget();
   emitAckLogHook("chunk");
 }
 
 void RemoteTTSReaderActivity::handleStreamCommit(const JsonDocument& doc) {
   uint32_t uptoSeq = 0;
-  if (!doc["sessionId"].is<const char*>() ||
-      !RemoteTTSPacketFieldReaders::readUIntAlias(doc, "uptoSeq", "committedSeq", uptoSeq)) {
-    stats.malformedPackets++;
-    setDebugMessage("Rejected stream_commit",
-                    doc["sessionId"].is<const char*>() ? "Missing uptoSeq/committedSeq" : "Missing sessionId");
-    return;
-  }
-
+  if (!doc["sessionId"].is<const char*>() || !RemoteTTSPacketFieldReaders::readUIntAlias(doc, "uptoSeq", "committedSeq", uptoSeq)) return;
   const std::string session = doc["sessionId"].as<const char*>();
-  if (!streamMode || session != streamSessionId) {
-    LOG_INF("RTTS", "Ignored stream_commit for inactive session=%s", session.c_str());
-    return;
-  }
-
-  if (streamCommitStartedAtMs == 0) {
-    streamCommitStartedAtMs = millis();
-  }
-
+  if (!streamMode || session != streamSessionId) return;
+  if (streamCommitStartedAtMs == 0) streamCommitStartedAtMs = millis();
   uint32_t seq = RemoteTTSStreamSequencer::nextExpectedSeq(highestContiguousSeq);
   while (seq <= uptoSeq) {
     auto it = pendingChunks.find(seq);
-    if (it == pendingChunks.end()) {
-      stats.gapEvents++;
-      break;
-    }
+    if (it == pendingChunks.end()) { stats.gapEvents++; break; }
     commitChunk(it->second);
     seenChunkSeq.insert(seq);
     pendingChunks.erase(it);
     highestContiguousSeq = static_cast<int64_t>(seq);
     seq++;
   }
-
   lastCommitSeq = std::max(lastCommitSeq, uptoSeq);
   stats.commits++;
-  const uint32_t commitLatency = millis() - streamCommitStartedAtMs;
-  stats.commitLatencyMs = commitLatency;
-  stats.maxCommitLatencyMs = std::max(stats.maxCommitLatencyMs, commitLatency);
+  stats.commitLatencyMs = millis() - streamCommitStartedAtMs;
+  stats.maxCommitLatencyMs = std::max(stats.maxCommitLatencyMs, stats.commitLatencyMs);
   streamCommitStartedAtMs = 0;
-
   rebuildRenderWindow();
   emitAckLogHook("commit");
 }
 
 void RemoteTTSReaderActivity::handleStreamSeek(const JsonDocument& doc) {
   int offset = 0;
-  const bool hasOffset = RemoteTTSPacketFieldReaders::readIntAlias(doc, "offset", "start", offset);
-  if (!doc["sessionId"].is<const char*>() || !hasOffset) {
-    stats.malformedPackets++;
-    setDebugMessage("Rejected stream_seek",
-                    doc["sessionId"].is<const char*>() ? "Missing offset/start" : "Missing sessionId");
-    return;
-  }
-
-  const std::string session = doc["sessionId"].as<const char*>();
-  if (!streamMode || session != streamSessionId) {
-    LOG_INF("RTTS", "Ignored stream_seek for inactive session=%s", session.c_str());
-    return;
-  }
-
+  if (!doc["sessionId"].is<const char*>() || !RemoteTTSPacketFieldReaders::readIntAlias(doc, "offset", "start", offset)) return;
+  if (!streamMode || doc["sessionId"].as<const char*>() != streamSessionId) return;
   renderPointerGlobal = std::max(0, offset);
   if (doc["resetSeq"].is<uint32_t>()) {
     const uint32_t resetSeq = doc["resetSeq"].as<uint32_t>();
@@ -574,44 +430,21 @@ void RemoteTTSReaderActivity::handleStreamSeek(const JsonDocument& doc) {
     lastCommitSeq = highestContiguousSeq < 0 ? 0 : static_cast<uint32_t>(highestContiguousSeq);
     pendingChunks.clear();
     seenChunkSeq.clear();
-    LOG_INF("RTTS", "stream_seek requested seq reset to %u", static_cast<unsigned int>(resetSeq));
   }
   rebuildRenderWindow();
-  setDebugMessage("stream_seek", std::to_string(renderPointerGlobal));
 }
 
 void RemoteTTSReaderActivity::handleStreamEnd(const JsonDocument& doc) {
-  if (!doc["sessionId"].is<const char*>()) {
-    stats.malformedPackets++;
-    setDebugMessage("Rejected stream_end", "Missing sessionId");
-    return;
-  }
-  const std::string session = doc["sessionId"].as<const char*>();
-  if (!streamMode || session != streamSessionId) {
-    return;
-  }
-
+  if (!doc["sessionId"].is<const char*>() || doc["sessionId"].as<const char*>() != streamSessionId) return;
   emitAckLogHook("end");
-  setDebugMessage("stream_end", "Session complete");
 }
 
 void RemoteTTSReaderActivity::commitChunk(const StreamChunk& chunk) {
-  if (committedText.empty()) {
-    committedBaseOffset = chunk.offset;
-  }
-
+  if (committedText.empty()) committedBaseOffset = chunk.offset;
   const int committedEnd = committedBaseOffset + static_cast<int>(committedText.size());
-  if (chunk.offset > committedEnd) {
-    deferredCommitted[chunk.offset] = chunk.text;
-    stats.gapEvents++;
-    return;
-  }
-
+  if (chunk.offset > committedEnd) { deferredCommitted[chunk.offset] = chunk.text; stats.gapEvents++; return; }
   int trim = std::max(0, committedEnd - chunk.offset);
-  if (trim >= static_cast<int>(chunk.text.size())) {
-    return;
-  }
-
+  if (trim >= static_cast<int>(chunk.text.size())) return;
   committedText += chunk.text.substr(trim);
   stitchDeferredCommitted();
   enforceStreamMemoryBudget();
@@ -621,25 +454,16 @@ void RemoteTTSReaderActivity::stitchDeferredCommitted() {
   while (!deferredCommitted.empty()) {
     auto it = deferredCommitted.begin();
     const int committedEnd = committedBaseOffset + static_cast<int>(committedText.size());
-    if (it->first > committedEnd) {
-      break;
-    }
-
+    if (it->first > committedEnd) break;
     int trim = std::max(0, committedEnd - it->first);
-    if (trim < static_cast<int>(it->second.size())) {
-      committedText += it->second.substr(trim);
-    }
+    if (trim < static_cast<int>(it->second.size())) committedText += it->second.substr(trim);
     deferredCommitted.erase(it);
   }
 }
 
 void RemoteTTSReaderActivity::enforceStreamMemoryBudget() {
   size_t pendingBytes = 0;
-  for (const auto& kv : pendingChunks) {
-    pendingBytes += kv.second.text.size();
-  }
-
-  // Sliding window eviction from committedText
+  for (const auto& kv : pendingChunks) pendingBytes += kv.second.text.size();
   while (!committedText.empty() && (committedText.size() > MAX_COMMITTED_BYTES || (pendingBytes + committedText.size()) > MAX_STREAM_BYTES)) {
     const size_t evictBytes = std::min<size_t>(128, committedText.size());
     committedText.erase(0, evictBytes);
@@ -650,8 +474,6 @@ void RemoteTTSReaderActivity::enforceStreamMemoryBudget() {
       state.highlightDirty = true;
     }
   }
-
-  // If we are STILL over budget but committedText is empty, drop pending chunks
   while (!pendingChunks.empty() && pendingBytes > MAX_STREAM_BYTES) {
     auto it = pendingChunks.begin();
     pendingBytes -= it->second.text.size();
@@ -665,31 +487,17 @@ void RemoteTTSReaderActivity::rebuildRenderWindow() {
   state.renderWindowStart = committedBaseOffset;
   state.renderWindowEnd = committedBaseOffset + static_cast<int>(committedText.size());
   state.textDirty = true;
-
   mapHighlightToRenderWindow(renderPointerGlobal, renderPointerGlobal + 1);
 }
 
 void RemoteTTSReaderActivity::mapHighlightToRenderWindow(int globalStart, int globalEnd) {
-  if (globalStart > globalEnd) {
-    std::swap(globalStart, globalEnd);
-  }
-
+  if (globalStart > globalEnd) std::swap(globalStart, globalEnd);
   const int windowStart = state.renderWindowStart;
   const int windowEnd = state.renderWindowEnd;
-  if (windowEnd <= windowStart) {
-    state.highlightStart = 0;
-    state.highlightEnd = 0;
-    state.highlightDirty = true;
-    return;
-  }
-
+  if (windowEnd <= windowStart) { state.highlightStart = 0; state.highlightEnd = 0; state.highlightDirty = true; return; }
   const int clampedStart = std::clamp(globalStart, windowStart, windowEnd);
   const int clampedEnd = std::clamp(globalEnd, windowStart, windowEnd);
-  if (clampedStart != globalStart || clampedEnd != globalEnd) {
-    stats.highlightMisses++;
-    emitAckLogHook("highlight miss");
-  }
-
+  if (clampedStart != globalStart || clampedEnd != globalEnd) { stats.highlightMisses++; emitAckLogHook("highlight miss"); }
   state.highlightStart = clampedStart - windowStart;
   state.highlightEnd = std::max(state.highlightStart, clampedEnd - windowStart);
   state.highlightDirty = true;
@@ -698,43 +506,24 @@ void RemoteTTSReaderActivity::mapHighlightToRenderWindow(int globalStart, int gl
 void RemoteTTSReaderActivity::emitAckLogHook(const char* reason) {
   uint32_t nextExpected = RemoteTTSStreamSequencer::nextExpectedSeq(highestContiguousSeq);
   std::string missing;
-  const uint32_t maxProbe = std::min<uint32_t>(lastCommitSeq + 8, nextExpected + 8);
-  for (uint32_t s = nextExpected; s <= maxProbe; ++s) {
-    if (pendingChunks.find(s) == pendingChunks.end()) {
-      if (!missing.empty()) {
-        missing += ",";
-      }
-      missing += std::to_string(s);
-    }
+  for (uint32_t s = nextExpected; s <= std::min<uint32_t>(lastCommitSeq + 8, nextExpected + 8); ++s) {
+    if (pendingChunks.find(s) == pendingChunks.end()) { if (!missing.empty()) missing += ","; missing += std::to_string(s); }
   }
-
   size_t pendingBytes = 0;
-  for (const auto& kv : pendingChunks) {
-    pendingBytes += kv.second.text.size();
-  }
+  for (const auto& kv : pendingChunks) pendingBytes += kv.second.text.size();
   const size_t fillPct = (100 * (pendingBytes + committedText.size())) / MAX_STREAM_BYTES;
   stats.lastBufferFillPct = static_cast<uint32_t>(fillPct);
-
-  LOG_INF("RTTS", "ack_hook reason=%s session=%s highContig=%d missing=%s fill=%u%% commitMs=%u/%u",
-          reason, streamSessionId.c_str(), static_cast<int>(highestContiguousSeq), missing.empty() ? "none" : missing.c_str(),
-          static_cast<unsigned int>(fillPct), static_cast<unsigned int>(stats.commitLatencyMs),
-          static_cast<unsigned int>(stats.maxCommitLatencyMs));
-
+  LOG_INF("RTTS", "ack_hook reason=%s fill=%u%%", reason, static_cast<unsigned int>(fillPct));
   JsonDocument ackDoc;
   ackDoc["type"] = "ack";
   ackDoc["sessionId"] = streamSessionId;
-  ackDoc["reason"] = reason;
   const uint32_t ackSeq = highestContiguousSeq < 0 ? 0 : static_cast<uint32_t>(highestContiguousSeq);
   ackDoc["sequenceId"] = ackSeq;
   ackDoc["highestContiguousSeq"] = ackSeq;
   ackDoc["bufferFillPct"] = static_cast<unsigned int>(fillPct);
-  ackDoc["missing"] = missing;
-  ackDoc["commitLatencyMs"] = stats.commitLatencyMs;
   std::string ackPayload;
   serializeJson(ackDoc, ackPayload);
-  if (!BluetoothManager::instance().sendFeedback(ackPayload)) {
-    LOG_DBG("RTTS", "ACK notify unavailable; keeping log-only feedback");
-  }
+  BluetoothManager::instance().sendFeedback(ackPayload);
 }
 
 void RemoteTTSReaderActivity::resetStreamingSession(const std::string& reason) {
@@ -764,73 +553,25 @@ void RemoteTTSReaderActivity::wrapText(int maxWidth) {
     wrappedLines.push_back({"3) Send position/stream_commit", 0, 0});
     return;
   }
-
   std::string line;
-  int lineStart = 0;
-  int idx = 0;
-  int wordStart = 0;
-
+  int lineStart = 0, idx = 0, wordStart = 0;
   while (idx <= static_cast<int>(state.text.size())) {
     const bool atEnd = idx == static_cast<int>(state.text.size());
     const bool separator = atEnd || state.text[idx] == ' ' || state.text[idx] == '\n';
-
-    if (!separator) {
-      idx++;
-      continue;
-    }
-
+    if (!separator) { idx++; continue; }
     std::string token = state.text.substr(wordStart, idx - wordStart);
     std::string candidate = line.empty() ? token : line + " " + token;
-
-    if (!token.empty() && renderer.getTextWidth(fontId, candidate.c_str()) <= maxWidth) {
-      line = candidate;
-    } else {
-      if (!line.empty()) {
-        wrappedLines.push_back({line, lineStart, wordStart - 1});
-      }
-      line = token;
-      lineStart = wordStart;
+    if (!token.empty() && renderer.getTextWidth(fontId, candidate.c_str()) <= maxWidth) { line = candidate; }
+    else {
+      if (!line.empty()) wrappedLines.push_back({line, lineStart, wordStart - 1});
+      line = token; lineStart = wordStart;
     }
-
-    if (!atEnd && state.text[idx] == '\n') {
-      wrappedLines.push_back({line, lineStart, idx});
-      line.clear();
-      lineStart = idx + 1;
-    }
-
-    idx++;
-    wordStart = idx;
+    if (!atEnd && state.text[idx] == '\n') { wrappedLines.push_back({line, lineStart, idx}); line.clear(); lineStart = idx + 1; }
+    idx++; wordStart = idx;
   }
-
-  if (!line.empty()) {
-    wrappedLines.push_back({line, lineStart, static_cast<int>(state.text.size())});
-  }
+  if (!line.empty()) wrappedLines.push_back({line, lineStart, static_cast<int>(state.text.size())});
 }
 
-void RemoteTTSReaderActivity::setDemoContent() {
-  state.currentDocId.clear();
-  state.text.clear();
-  state.highlightStart = 0;
-  state.highlightEnd = 0;
-  state.textDirty = true;
-  state.highlightDirty = true;
-  state.renderWindowStart = 0;
-  state.renderWindowEnd = 0;
-}
-
-void RemoteTTSReaderActivity::clearLoadedContent() {
-  state.currentDocId.clear();
-  state.text.clear();
-  state.highlightStart = 0;
-  state.highlightEnd = 0;
-  state.textDirty = true;
-  state.highlightDirty = true;
-  state.renderWindowStart = 0;
-  state.renderWindowEnd = 0;
-}
-
-void RemoteTTSReaderActivity::setDebugMessage(const std::string& line1, const std::string& line2) {
-  debugLine1 = line1;
-  debugLine2 = line2;
-  state.highlightDirty = true;
-}
+void RemoteTTSReaderActivity::setDemoContent() { state.currentDocId.clear(); state.text.clear(); state.highlightStart = 0; state.highlightEnd = 0; state.textDirty = true; state.highlightDirty = true; state.renderWindowStart = 0; state.renderWindowEnd = 0; }
+void RemoteTTSReaderActivity::clearLoadedContent() { state.currentDocId.clear(); state.text.clear(); state.highlightStart = 0; state.highlightEnd = 0; state.textDirty = true; state.highlightDirty = true; state.renderWindowStart = 0; state.renderWindowEnd = 0; }
+void RemoteTTSReaderActivity::setDebugMessage(const std::string& line1, const std::string& line2) { debugLine1 = line1; debugLine2 = line2; state.highlightDirty = true; }
