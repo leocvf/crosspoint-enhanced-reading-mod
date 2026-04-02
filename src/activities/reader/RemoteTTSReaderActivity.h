@@ -60,6 +60,8 @@ class RemoteTTSReaderActivity : public Activity {
     uint32_t commits = 0;
     uint32_t commitLatencyMs = 0;
     uint32_t maxCommitLatencyMs = 0;
+    uint32_t lastBufferFillPct = 0;
+    uint32_t totalCharsInWindow = 0;
   };
 
   std::vector<WrappedLine> wrappedLines;

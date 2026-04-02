@@ -135,85 +135,51 @@ void RemoteTTSReaderActivity::render(Activity::RenderLock&&) {
   }
 
   renderer.clearScreen();
-  renderer.drawText(UI_12_FONT_ID, margin, 6, "Remote TTS Reader", true, EpdFontFamily::BOLD);
+
+  // --- Top Status Header ---
+  renderer.drawText(UI_12_FONT_ID, margin, 4, "Stream Reader", true, EpdFontFamily::BOLD);
+
   const BluetoothManager& bt = BluetoothManager::instance();
-  const char* bleState = bt.isConnected() ? "Connected" : (bt.isAdvertising() ? "Advertising" : "Stopped");
-  int statusY = 20;
+  std::string connStatus = bt.isConnected() ? "LINK OK" : "LINK LOST";
+  renderer.drawText(SMALL_FONT_ID, screenWidth - margin - renderer.getTextWidth(SMALL_FONT_ID, connStatus.c_str()), 6, connStatus.c_str(), true);
+
+  // --- Stream Health Bar ---
+  // Visualize how much of the memory budget is used
+  const int barH = 4;
+  const int barY = 22;
+  renderer.drawRect(margin, barY, contentWidth, barH, true); // Outline
+  if (stats.lastBufferFillPct > 0) {
+    int fillW = (contentWidth * std::min<uint32_t>(100, stats.lastBufferFillPct)) / 100;
+    renderer.fillRect(margin, barY, fillW, barH, true); // Fill
+  }
+
+  int statusY = barY + 8;
   const int bodyLineHeight = renderer.getLineHeight(UI_10_FONT_ID) + 2;
-  int statusLineBudget = 7;
-  auto drawWrappedSmall = [&](const std::string& text) {
-    if (text.empty() || statusLineBudget <= 0) {
-      return;
-    }
 
-    std::string line;
-    size_t idx = 0;
-    while (idx < text.size()) {
-      while (idx < text.size() && text[idx] == ' ') {
-        idx++;
-      }
-      size_t wordEnd = idx;
-      while (wordEnd < text.size() && text[wordEnd] != ' ') {
-        wordEnd++;
-      }
-      const std::string word = text.substr(idx, wordEnd - idx);
-      const std::string candidate = line.empty() ? word : (line + " " + word);
-      const bool fits = renderer.getTextWidth(SMALL_FONT_ID, candidate.c_str()) <= contentWidth;
+  // Compact metrics for MagSafe (less vertical space wasted)
+  char buf[64];
+  snprintf(buf, sizeof(buf), "Buf: %u%%  |  Chunks: %u  |  Miss: %u",
+           stats.lastBufferFillPct, stats.chunksReceived, stats.highlightMisses);
+  renderer.drawText(SMALL_FONT_ID, margin, statusY, buf, true);
+  statusY += smallLineHeight;
 
-      if (!line.empty() && !fits) {
-        if (statusLineBudget <= 0) {
-          return;
-        }
-        renderer.drawText(SMALL_FONT_ID, margin, statusY, line.c_str(), true);
-        statusY += smallLineHeight;
-        statusLineBudget--;
-        line = word;
-      } else {
-        line = candidate;
-      }
-
-      idx = wordEnd;
-    }
-
-    if (!line.empty() && statusLineBudget > 0) {
-      renderer.drawText(SMALL_FONT_ID, margin, statusY, line.c_str(), true);
-      statusY += smallLineHeight;
-      statusLineBudget--;
-    }
-  };
-
-  drawWrappedSmall(std::string("BLE: ") + bleState);
-  drawWrappedSmall(std::string("Device: ") + X4_TTS_DEVICE_NAME);
-  drawWrappedSmall(streamMode ? ("Session: " + streamSessionId) : "Session: legacy");
-  drawWrappedSmall(debugLine1);
-  if (!debugLine2.empty()) {
-    drawWrappedSmall(debugLine2);
-  } else if (!bt.getLastError().empty()) {
-    drawWrappedSmall(bt.getLastError());
+  if (!debugLine1.empty()) {
+    renderer.drawText(SMALL_FONT_ID, margin, statusY, debugLine1.c_str(), true);
+    statusY += smallLineHeight;
   }
-  drawWrappedSmall("Cmds: " + std::to_string(commandCount) + "  Last: " + lastCommandSummary);
-  drawWrappedSmall("Chunks " + std::to_string(stats.chunksReceived) + "/" +
-                   std::to_string(stats.duplicateChunks) + "/" + std::to_string(stats.gapEvents) +
-                   "  Miss: " + std::to_string(stats.highlightMisses));
 
-  const int minTextLines = 3;
-  const int maxStatusBottom = (screenHeight - 18) - (minTextLines * bodyLineHeight) - 6;
-  if (statusY > maxStatusBottom) {
-    statusY = std::max(20, maxStatusBottom);
-  }
-  const int startY = statusY + 6;
+  const int startY = statusY + 4;
+  const int availableHeight = (screenHeight - 24) - startY;
+  const int maxVisibleLines = std::max(1, availableHeight / bodyLineHeight);
 
-  const int lineHeight = bodyLineHeight;
-  const int availableHeight = (screenHeight - 18) - startY;
-  const int maxVisibleLines = std::max(1, availableHeight / lineHeight);
-
+  // --- Text Rendering ---
   int preferredLine = viewportFirstLine;
   if (autoFollowHighlight && !wrappedLines.empty()) {
     for (size_t i = 0; i < wrappedLines.size(); ++i) {
       const auto& line = wrappedLines[i];
       const bool intersects = !(state.highlightEnd <= line.start || state.highlightStart >= line.end);
       if (intersects) {
-        preferredLine = static_cast<int>(i) - (maxVisibleLines / 2);
+        preferredLine = static_cast<int>(i) - (maxVisibleLines / 3); // Position highlight higher for better reading
         break;
       }
     }
@@ -225,26 +191,27 @@ void RemoteTTSReaderActivity::render(Activity::RenderLock&&) {
   int y = startY;
   for (int i = viewportFirstLine; i < static_cast<int>(wrappedLines.size()); ++i) {
     const auto& line = wrappedLines[i];
-    if (y + lineHeight >= screenHeight - 18) {
+    if (y + bodyLineHeight >= screenHeight - 22) {
       break;
     }
 
     const bool intersects = !(state.highlightEnd <= line.start || state.highlightStart >= line.end);
     if (intersects) {
-      renderer.fillRect(margin - 2, y - 1, contentWidth + 4, lineHeight + 1, false);
+      // Invert for highlight
+      renderer.fillRect(margin - 2, y - 1, contentWidth + 4, bodyLineHeight + 1, false);
       renderer.drawText(UI_10_FONT_ID, margin, y, line.text.c_str(), false);
     } else {
       renderer.drawText(UI_10_FONT_ID, margin, y, line.text.c_str(), true);
     }
-
-    y += lineHeight;
+    y += bodyLineHeight;
   }
 
+  // --- Bottom Navigation / Footer ---
   const int totalPages = std::max(1, (static_cast<int>(wrappedLines.size()) + maxVisibleLines - 1) / maxVisibleLines);
   const int currentPage = std::min(totalPages, (viewportFirstLine / maxVisibleLines) + 1);
-  renderer.drawText(SMALL_FONT_ID, margin, screenHeight - 20,
-                    ("View " + std::to_string(currentPage) + "/" + std::to_string(totalPages)).c_str());
-  renderer.drawText(SMALL_FONT_ID, margin, screenHeight - 10, "OK: Follow  Pg +/-: Scroll  Back: Home");
+
+  snprintf(buf, sizeof(buf), "Page %d/%d  [%s]", currentPage, totalPages, streamMode ? "STREAM" : "LEGACY");
+  renderer.drawText(SMALL_FONT_ID, margin, screenHeight - 12, buf, true);
 
   const unsigned long now = millis();
   const bool onlyHighlightDirty = state.highlightDirty && !state.textDirty;
@@ -724,6 +691,7 @@ void RemoteTTSReaderActivity::emitAckLogHook(const char* reason) {
     pendingBytes += kv.second.text.size();
   }
   const size_t fillPct = (100 * (pendingBytes + committedText.size())) / MAX_STREAM_BYTES;
+  stats.lastBufferFillPct = static_cast<uint32_t>(fillPct);
 
   LOG_INF("RTTS", "ack_hook reason=%s session=%s highContig=%d missing=%s fill=%u%% commitMs=%u/%u",
           reason, streamSessionId.c_str(), static_cast<int>(highestContiguousSeq), missing.empty() ? "none" : missing.c_str(),
