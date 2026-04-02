@@ -20,13 +20,15 @@ class RemoteTTSLegacyMode {
     SessionState state = SessionState::IDLE;
     const std::string* activeDocId = nullptr;
     size_t docLen = 0;
+    uint32_t globalBaseOffset = 0;
     int start = 0;
     int end = 0;
     Counters counters;
   };
 
   static constexpr size_t MAX_DOC_BYTES = 32 * 1024;
-  static constexpr unsigned long DEFAULT_FINALIZE_MS = 500;
+  static constexpr size_t EVICT_CHUNK_BYTES = 4 * 1024;
+  static constexpr unsigned long DEFAULT_FINALIZE_MS = 300;
 
   explicit RemoteTTSLegacyMode(unsigned long finalizeMs = DEFAULT_FINALIZE_MS) : finalizeDelayMs(finalizeMs) {}
 
@@ -36,6 +38,8 @@ class RemoteTTSLegacyMode {
     activeText.clear();
     pendingDocId.clear();
     pendingText.clear();
+    globalBaseOffset = 0;
+    pendingBaseOffset = 0;
     lastPositionStart = 0;
     lastPositionEnd = 0;
     hasPendingFinalize = false;
@@ -44,32 +48,20 @@ class RemoteTTSLegacyMode {
   }
 
   bool onLoadText(const std::string& docId, const std::string& text, unsigned long nowMs) {
-    std::string sanitized;
-    const bool hadInvalidUtf8 = !sanitizeUtf8(text, sanitized);
-    if (hadInvalidUtf8) {
-      counters.truncatedPayload++;
-      state = SessionState::ERROR_RECOVERABLE;
-    }
+    if (docId.empty()) return false;
 
+    // Reset if it's a completely new document
     if (!pendingDocId.empty() && pendingDocId != docId) {
-      finalizePendingDoc();
+      clear();
     }
 
-    if (pendingDocId != docId) {
-      pendingDocId = docId;
-      pendingText.clear();
-    }
+    pendingDocId = docId;
+    pendingText += text;
 
-    if (pendingText.size() < MAX_DOC_BYTES) {
-      const size_t available = MAX_DOC_BYTES - pendingText.size();
-      if (sanitized.size() > available) {
-        pendingText.append(sanitized.data(), available);
-        counters.truncatedPayload++;
-      } else {
-        pendingText += sanitized;
-      }
-    } else {
-      counters.truncatedPayload++;
+    // Sliding window enforcement: if pending text is too big, drop the start
+    while (pendingText.size() > MAX_DOC_BYTES) {
+      pendingText.erase(0, EVICT_CHUNK_BYTES);
+      pendingBaseOffset += EVICT_CHUNK_BYTES;
     }
 
     hasPendingFinalize = true;
@@ -78,7 +70,7 @@ class RemoteTTSLegacyMode {
     return true;
   }
 
-  bool onPosition(const std::string& docId, int start, int end) {
+  bool onPosition(const std::string& docId, int globalStart, int globalEnd) {
     if (activeDocId.empty() || (state != SessionState::DOC_READY && state != SessionState::POSITIONING)) {
       return false;
     }
@@ -87,33 +79,25 @@ class RemoteTTSLegacyMode {
       return false;
     }
 
+    // Map global book offsets to our local sliding window
+    int localStart = static_cast<int>(globalStart) - static_cast<int>(globalBaseOffset);
+    int localEnd = static_cast<int>(globalEnd) - static_cast<int>(globalBaseOffset);
+
     const int len = static_cast<int>(activeText.size());
-    const int rawStart = start;
-    const int rawEnd = end;
+    localStart = std::clamp(localStart, 0, len);
+    localEnd = std::clamp(localEnd, 0, len);
 
-    start = std::clamp(start, 0, len);
-    end = std::clamp(end, 0, len);
-    if (start > end) {
-      std::swap(start, end);
-    }
-    if (start == end) {
-      if (end < len) {
-        end += 1;
-      } else if (start > 0) {
-        start -= 1;
-      }
-    }
+    if (localStart > localEnd) std::swap(localStart, localEnd);
+    
+    // Ensure at least 1 char is highlighted if it's within our window
+    if (localStart == localEnd && localStart < len) localEnd++;
 
-    if (start != rawStart || end != rawEnd) {
-      counters.outOfRangePosition++;
-    }
-
-    if (start == lastPositionStart && end == lastPositionEnd) {
+    if (localStart == lastPositionStart && localEnd == lastPositionEnd) {
       return false;
     }
 
-    lastPositionStart = start;
-    lastPositionEnd = end;
+    lastPositionStart = localStart;
+    lastPositionEnd = localEnd;
     state = SessionState::POSITIONING;
     highlightDirty = true;
     return true;
@@ -128,18 +112,21 @@ class RemoteTTSLegacyMode {
   }
 
   Snapshot snapshot() const {
-    return Snapshot{state, &activeDocId, activeText.size(), lastPositionStart, lastPositionEnd, counters};
+    return Snapshot{state, &activeDocId, activeText.size(), globalBaseOffset, lastPositionStart, lastPositionEnd, counters};
   }
 
   const std::string& docId() const { return activeDocId; }
   const std::string& text() const { return activeText; }
+  uint32_t getGlobalBaseOffset() const { return globalBaseOffset; }
   int highlightStart() const { return lastPositionStart; }
   int highlightEnd() const { return lastPositionEnd; }
+  
   bool consumeDocReadyDirty() {
     const bool dirty = docReadyDirty;
     docReadyDirty = false;
     return dirty;
   }
+  
   bool consumeHighlightDirty() {
     const bool dirty = highlightDirty;
     highlightDirty = false;
@@ -149,66 +136,13 @@ class RemoteTTSLegacyMode {
   Counters& mutableCounters() { return counters; }
 
  private:
-  static bool sanitizeUtf8(const std::string& input, std::string& out) {
-    out.clear();
-    out.reserve(input.size());
-    bool clean = true;
-
-    for (size_t i = 0; i < input.size();) {
-      const unsigned char c = static_cast<unsigned char>(input[i]);
-      if (c <= 0x7F) {
-        out.push_back(static_cast<char>(c));
-        i++;
-        continue;
-      }
-
-      size_t need = 0;
-      if ((c & 0xE0) == 0xC0) need = 2;
-      else if ((c & 0xF0) == 0xE0) need = 3;
-      else if ((c & 0xF8) == 0xF0) need = 4;
-      else {
-        clean = false;
-        i++;
-        continue;
-      }
-
-      if (i + need > input.size()) {
-        clean = false;
-        break;
-      }
-
-      bool valid = true;
-      for (size_t j = 1; j < need; ++j) {
-        const unsigned char cc = static_cast<unsigned char>(input[i + j]);
-        if ((cc & 0xC0) != 0x80) {
-          valid = false;
-          break;
-        }
-      }
-
-      if (!valid) {
-        clean = false;
-        i++;
-        continue;
-      }
-
-      out.append(input, i, need);
-      i += need;
-    }
-
-    return clean;
-  }
-
   void finalizePendingDoc() {
-    if (!hasPendingFinalize) {
-      return;
-    }
+    if (!hasPendingFinalize) return;
     activeDocId = pendingDocId;
     activeText = pendingText;
+    globalBaseOffset = pendingBaseOffset;
     hasPendingFinalize = false;
     state = SessionState::DOC_READY;
-    lastPositionStart = 0;
-    lastPositionEnd = 0;
     docReadyDirty = true;
     highlightDirty = true;
   }
@@ -216,13 +150,19 @@ class RemoteTTSLegacyMode {
   SessionState state = SessionState::IDLE;
   std::string activeDocId;
   std::string activeText;
+  uint32_t globalBaseOffset = 0;
+
   std::string pendingDocId;
   std::string pendingText;
+  uint32_t pendingBaseOffset = 0;
+
   int lastPositionStart = 0;
   int lastPositionEnd = 0;
+  
   bool hasPendingFinalize = false;
   unsigned long finalizeAtMs = 0;
   unsigned long finalizeDelayMs = DEFAULT_FINALIZE_MS;
+  
   bool docReadyDirty = true;
   bool highlightDirty = true;
   Counters counters;
