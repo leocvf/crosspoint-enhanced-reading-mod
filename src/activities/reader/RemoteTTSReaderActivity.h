@@ -10,6 +10,8 @@
 #include <vector>
 
 #include "activities/Activity.h"
+#include "RemoteTTSLegacyMode.h"
+#include "RemoteTTSFrameParser.h"
 
 class RemoteTTSReaderActivity : public Activity {
  public:
@@ -74,6 +76,7 @@ class RemoteTTSReaderActivity : public Activity {
   unsigned long lastRenderMs = 0;
 
   bool streamMode = false;
+  RemoteTTSLegacyMode legacyMode;
   std::string streamSessionId;
   std::string streamDocId;
   int64_t highestContiguousSeq = -1;
@@ -89,12 +92,27 @@ class RemoteTTSReaderActivity : public Activity {
   int renderPointerGlobal = 0;
 
   static constexpr size_t MAX_JSON_BYTES = 768;
+  static constexpr size_t MAX_FRAME_BUFFER_BYTES = 2048;
+  static constexpr unsigned long LEGACY_POSITION_RENDER_INTERVAL_MS = 33;
+
+  RemoteTTSFrameParser frameParser{MAX_FRAME_BUFFER_BYTES};
+  unsigned long lastDocMismatchLogMs = 0;
+  unsigned long lastTelemetryLogMs = 0;
+  unsigned long lastStateLogMs = 0;
+  unsigned long lastLegacyPositionApplyMs = 0;
+  bool hasPendingLegacyPosition = false;
+  int pendingLegacyStart = 0;
+  int pendingLegacyEnd = 0;
+
   static constexpr size_t MAX_PENDING_CHUNKS = 96;
   static constexpr size_t MAX_STREAM_BYTES = 24 * 1024;
   static constexpr size_t MAX_COMMITTED_BYTES = 16 * 1024;
   static constexpr unsigned long RENDER_COALESCE_MS = 120;
 
   void handlePayload(const std::string& payload);
+  void processJsonFrame(const std::string& frame);
+  void applyPendingLegacyPosition(unsigned long nowMs, bool force = false);
+  void logLegacyTelemetryThrottled(unsigned long nowMs);
   void handleCommand(const JsonDocument& doc);
   void wrapText(int maxWidth);
   void setDemoContent();
