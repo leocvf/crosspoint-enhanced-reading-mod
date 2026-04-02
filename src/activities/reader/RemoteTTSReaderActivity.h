@@ -2,6 +2,7 @@
 
 #include <ArduinoJson.h>
 
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <set>
@@ -75,7 +76,7 @@ class RemoteTTSReaderActivity : public Activity {
   bool streamMode = false;
   std::string streamSessionId;
   std::string streamDocId;
-  uint32_t highestContiguousSeq = 0;
+  int64_t highestContiguousSeq = -1;
   uint32_t lastCommitSeq = 0;
   uint32_t streamStartSeq = 1;
   int committedBaseOffset = 0;
