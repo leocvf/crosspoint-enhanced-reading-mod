@@ -1,5 +1,7 @@
 #include "RemoteTTSReaderActivity.h"
 
+#include "RemoteTTSStreamSequencer.h"
+
 #include <HalDisplay.h>
 #include <Logging.h>
 
@@ -389,8 +391,8 @@ void RemoteTTSReaderActivity::handleStreamStart(const JsonDocument& doc) {
   streamDocId = doc["docId"].as<const char*>();
   state.currentDocId = streamDocId;
   streamStartSeq = doc["startSeq"].is<uint32_t>() ? doc["startSeq"].as<uint32_t>() : 0;
-  highestContiguousSeq = streamStartSeq > 0 ? (streamStartSeq - 1) : 0;
-  lastCommitSeq = highestContiguousSeq;
+  highestContiguousSeq = RemoteTTSStreamSequencer::initialHighestContiguousSeq(streamStartSeq);
+  lastCommitSeq = highestContiguousSeq < 0 ? 0 : static_cast<uint32_t>(highestContiguousSeq);
   committedBaseOffset = 0;
   committedText.clear();
   deferredCommitted.clear();
@@ -406,6 +408,9 @@ void RemoteTTSReaderActivity::handleStreamStart(const JsonDocument& doc) {
           streamDocId.c_str(), static_cast<unsigned int>(streamStartSeq),
           doc["streamVersion"].is<int>() ? doc["streamVersion"].as<int>() : 1,
           doc["totalChars"].is<int>() ? doc["totalChars"].as<int>() : -1);
+  LOG_DBG("RTTS", "stream_start baseline startSeq=%u highestInit=%d firstCommitTarget=%u",
+          static_cast<unsigned int>(streamStartSeq), static_cast<int>(highestContiguousSeq),
+          static_cast<unsigned int>(RemoteTTSStreamSequencer::nextExpectedSeq(highestContiguousSeq)));
   setDebugMessage("stream_start", streamSessionId);
 }
 
@@ -483,7 +488,7 @@ void RemoteTTSReaderActivity::handleStreamCommit(const JsonDocument& doc) {
     streamCommitStartedAtMs = millis();
   }
 
-  uint32_t seq = highestContiguousSeq + 1;
+  uint32_t seq = RemoteTTSStreamSequencer::nextExpectedSeq(highestContiguousSeq);
   while (seq <= uptoSeq) {
     auto it = pendingChunks.find(seq);
     if (it == pendingChunks.end()) {
@@ -493,7 +498,7 @@ void RemoteTTSReaderActivity::handleStreamCommit(const JsonDocument& doc) {
     commitChunk(it->second);
     seenChunkSeq.insert(seq);
     pendingChunks.erase(it);
-    highestContiguousSeq = seq;
+    highestContiguousSeq = static_cast<int64_t>(seq);
     seq++;
   }
 
@@ -527,8 +532,8 @@ void RemoteTTSReaderActivity::handleStreamSeek(const JsonDocument& doc) {
   renderPointerGlobal = std::max(0, offset);
   if (doc["resetSeq"].is<uint32_t>()) {
     const uint32_t resetSeq = doc["resetSeq"].as<uint32_t>();
-    highestContiguousSeq = resetSeq > 0 ? (resetSeq - 1) : 0;
-    lastCommitSeq = highestContiguousSeq;
+    highestContiguousSeq = RemoteTTSStreamSequencer::initialHighestContiguousSeq(resetSeq);
+    lastCommitSeq = highestContiguousSeq < 0 ? 0 : static_cast<uint32_t>(highestContiguousSeq);
     pendingChunks.clear();
     seenChunkSeq.clear();
     LOG_INF("RTTS", "stream_seek requested seq reset to %u", static_cast<unsigned int>(resetSeq));
@@ -644,7 +649,7 @@ void RemoteTTSReaderActivity::mapHighlightToRenderWindow(int globalStart, int gl
 }
 
 void RemoteTTSReaderActivity::emitAckLogHook(const char* reason) {
-  uint32_t nextExpected = highestContiguousSeq + 1;
+  uint32_t nextExpected = RemoteTTSStreamSequencer::nextExpectedSeq(highestContiguousSeq);
   std::string missing;
   const uint32_t maxProbe = std::min<uint32_t>(lastCommitSeq + 8, nextExpected + 8);
   for (uint32_t s = nextExpected; s <= maxProbe; ++s) {
@@ -662,8 +667,8 @@ void RemoteTTSReaderActivity::emitAckLogHook(const char* reason) {
   }
   const size_t fillPct = (100 * (pendingBytes + committedText.size())) / MAX_STREAM_BYTES;
 
-  LOG_INF("RTTS", "ack_hook reason=%s session=%s highContig=%u missing=%s fill=%u%% commitMs=%u/%u",
-          reason, streamSessionId.c_str(), highestContiguousSeq, missing.empty() ? "none" : missing.c_str(),
+  LOG_INF("RTTS", "ack_hook reason=%s session=%s highContig=%d missing=%s fill=%u%% commitMs=%u/%u",
+          reason, streamSessionId.c_str(), static_cast<int>(highestContiguousSeq), missing.empty() ? "none" : missing.c_str(),
           static_cast<unsigned int>(fillPct), static_cast<unsigned int>(stats.commitLatencyMs),
           static_cast<unsigned int>(stats.maxCommitLatencyMs));
 
@@ -671,8 +676,9 @@ void RemoteTTSReaderActivity::emitAckLogHook(const char* reason) {
   ackDoc["type"] = "ack";
   ackDoc["sessionId"] = streamSessionId;
   ackDoc["reason"] = reason;
-  ackDoc["sequenceId"] = highestContiguousSeq;
-  ackDoc["highestContiguousSeq"] = highestContiguousSeq;
+  const uint32_t ackSeq = highestContiguousSeq < 0 ? 0 : static_cast<uint32_t>(highestContiguousSeq);
+  ackDoc["sequenceId"] = ackSeq;
+  ackDoc["highestContiguousSeq"] = ackSeq;
   ackDoc["bufferFillPct"] = static_cast<unsigned int>(fillPct);
   ackDoc["missing"] = missing;
   ackDoc["commitLatencyMs"] = stats.commitLatencyMs;
@@ -687,7 +693,7 @@ void RemoteTTSReaderActivity::resetStreamingSession(const std::string& reason) {
   streamMode = false;
   streamSessionId.clear();
   streamDocId.clear();
-  highestContiguousSeq = 0;
+  highestContiguousSeq = -1;
   lastCommitSeq = 0;
   streamStartSeq = 1;
   committedBaseOffset = 0;
