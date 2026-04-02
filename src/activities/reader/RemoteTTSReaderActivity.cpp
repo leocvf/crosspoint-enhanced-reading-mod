@@ -196,7 +196,8 @@ void RemoteTTSReaderActivity::render(Activity::RenderLock&&) {
 
     const bool intersects = !(state.highlightEnd <= line.start || state.highlightStart >= line.end);
     if (intersects) {
-      renderer.fillRectDither(margin - 2, y - 1, contentWidth + 4, bodyLineHeight + 1, LightGray);
+      // Dither for highlight (DarkGray background with black text)
+      renderer.fillRectDither(margin - 2, y - 1, contentWidth + 4, bodyLineHeight + 1, DarkGray);
       renderer.drawText(fontId, margin, y, line.text.c_str(), true);
     } else {
       renderer.drawText(fontId, margin, y, line.text.c_str(), true);
@@ -215,7 +216,7 @@ void RemoteTTSReaderActivity::render(Activity::RenderLock&&) {
   const bool onlyHighlightDirty = state.highlightDirty && !state.textDirty;
   
   HalDisplay::RefreshMode refreshMode = HalDisplay::FAST_REFRESH;
-  if (!onlyHighlightDirty || consecutiveFastRefreshes >= FORCE_HALF_REFRESH_EVERY) {
+  if (!onlyHighlightDirty || consecutiveFastRefreshes >= 50) {
     refreshMode = HalDisplay::HALF_REFRESH;
     consecutiveFastRefreshes = 0;
   } else {
