@@ -76,6 +76,7 @@ class RemoteTTSReaderActivity : public Activity {
   bool lastAdvertisingState = false;
   bool lastRenderWasFullRefresh = true;
   unsigned long lastRenderMs = 0;
+  uint32_t consecutiveFastRefreshes = 0;
 
   bool streamMode = false;
   RemoteTTSLegacyMode legacyMode;
@@ -93,9 +94,10 @@ class RemoteTTSReaderActivity : public Activity {
   uint32_t streamCommitStartedAtMs = 0;
   int renderPointerGlobal = 0;
 
-  static constexpr size_t MAX_JSON_BYTES = 768;
-  static constexpr size_t MAX_FRAME_BUFFER_BYTES = 2048;
+  static constexpr size_t MAX_JSON_BYTES = 1024;
+  static constexpr size_t MAX_FRAME_BUFFER_BYTES = 8192;
   static constexpr unsigned long LEGACY_POSITION_RENDER_INTERVAL_MS = 33;
+  static constexpr uint32_t FORCE_HALF_REFRESH_EVERY = 30;
 
   RemoteTTSFrameParser frameParser{MAX_FRAME_BUFFER_BYTES};
   unsigned long lastDocMismatchLogMs = 0;

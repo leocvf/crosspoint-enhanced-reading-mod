@@ -129,6 +129,7 @@ void RemoteTTSReaderActivity::render(Activity::RenderLock&&) {
   const int margin = 16;
   const int contentWidth = screenWidth - (margin * 2);
   const int smallLineHeight = renderer.getLineHeight(SMALL_FONT_ID) + 2;
+  const int fontId = BOOKERLY_18_FONT_ID;
 
   if (state.textDirty) {
     wrapText(contentWidth);
@@ -144,21 +145,19 @@ void RemoteTTSReaderActivity::render(Activity::RenderLock&&) {
   renderer.drawText(SMALL_FONT_ID, screenWidth - margin - renderer.getTextWidth(SMALL_FONT_ID, connStatus.c_str()), 6, connStatus.c_str(), true);
 
   // --- Stream Health Bar ---
-  // Visualize how much of the memory budget is used
   const int barH = 4;
   const int barY = 22;
-  renderer.drawRect(margin, barY, contentWidth, barH, true); // Outline
+  renderer.drawRect(margin, barY, contentWidth, barH, true);
   if (stats.lastBufferFillPct > 0) {
     int fillW = (contentWidth * std::min<uint32_t>(100, stats.lastBufferFillPct)) / 100;
-    renderer.fillRect(margin, barY, fillW, barH, true); // Fill
+    renderer.fillRect(margin, barY, fillW, barH, true);
   }
 
   int statusY = barY + 8;
-  const int bodyLineHeight = renderer.getLineHeight(UI_10_FONT_ID) + 2;
+  const int bodyLineHeight = renderer.getLineHeight(fontId) + 4;
 
-  // Compact metrics for MagSafe (less vertical space wasted)
   char buf[64];
-  snprintf(buf, sizeof(buf), "Buf: %u%%  |  Chunks: %u  |  Miss: %u",
+  snprintf(buf, sizeof(buf), "Buf: %u%% | Chunks: %u | Miss: %u",
            stats.lastBufferFillPct, stats.chunksReceived, stats.highlightMisses);
   renderer.drawText(SMALL_FONT_ID, margin, statusY, buf, true);
   statusY += smallLineHeight;
@@ -179,7 +178,7 @@ void RemoteTTSReaderActivity::render(Activity::RenderLock&&) {
       const auto& line = wrappedLines[i];
       const bool intersects = !(state.highlightEnd <= line.start || state.highlightStart >= line.end);
       if (intersects) {
-        preferredLine = static_cast<int>(i) - (maxVisibleLines / 3); // Position highlight higher for better reading
+        preferredLine = static_cast<int>(i) - (maxVisibleLines / 3);
         break;
       }
     }
@@ -197,28 +196,35 @@ void RemoteTTSReaderActivity::render(Activity::RenderLock&&) {
 
     const bool intersects = !(state.highlightEnd <= line.start || state.highlightStart >= line.end);
     if (intersects) {
-      // Dither for highlight (LightGray background with black text)
       renderer.fillRectDither(margin - 2, y - 1, contentWidth + 4, bodyLineHeight + 1, LightGray);
-      renderer.drawText(UI_10_FONT_ID, margin, y, line.text.c_str(), true);
+      renderer.drawText(fontId, margin, y, line.text.c_str(), true);
     } else {
-      renderer.drawText(UI_10_FONT_ID, margin, y, line.text.c_str(), true);
+      renderer.drawText(fontId, margin, y, line.text.c_str(), true);
     }
     y += bodyLineHeight;
   }
 
-  // --- Bottom Navigation / Footer ---
+  // --- Footer ---
   const int totalPages = std::max(1, (static_cast<int>(wrappedLines.size()) + maxVisibleLines - 1) / maxVisibleLines);
   const int currentPage = std::min(totalPages, (viewportFirstLine / maxVisibleLines) + 1);
-
-  snprintf(buf, sizeof(buf), "Page %d/%d  [%s]", currentPage, totalPages, streamMode ? "STREAM" : "LEGACY");
+  snprintf(buf, sizeof(buf), "Page %d/%d [%s]", currentPage, totalPages, streamMode ? "STREAM" : "LEGACY");
   renderer.drawText(SMALL_FONT_ID, margin, screenHeight - 12, buf, true);
 
+  // --- Smart Refresh Logic ---
   const unsigned long now = millis();
   const bool onlyHighlightDirty = state.highlightDirty && !state.textDirty;
-  const bool shouldUseFastRefresh = onlyHighlightDirty && (now - lastRenderMs) >= RENDER_COALESCE_MS;
-  renderer.displayBuffer(shouldUseFastRefresh ? HalDisplay::FAST_REFRESH : HalDisplay::HALF_REFRESH);
+  
+  HalDisplay::RefreshMode refreshMode = HalDisplay::FAST_REFRESH;
+  if (!onlyHighlightDirty || consecutiveFastRefreshes >= FORCE_HALF_REFRESH_EVERY) {
+    refreshMode = HalDisplay::HALF_REFRESH;
+    consecutiveFastRefreshes = 0;
+  } else {
+    consecutiveFastRefreshes++;
+  }
+
+  renderer.displayBuffer(refreshMode);
   lastRenderMs = now;
-  lastRenderWasFullRefresh = !shouldUseFastRefresh;
+  lastRenderWasFullRefresh = (refreshMode != HalDisplay::FAST_REFRESH);
 
   state.textDirty = false;
   state.highlightDirty = false;
@@ -750,6 +756,7 @@ void RemoteTTSReaderActivity::resetStreamingSession(const std::string& reason) {
 
 void RemoteTTSReaderActivity::wrapText(int maxWidth) {
   wrappedLines.clear();
+  const int fontId = BOOKERLY_18_FONT_ID;
   if (state.text.empty()) {
     wrappedLines.push_back({"Ready to receive text from phone app.", 0, 0});
     wrappedLines.push_back({"1) Connect to BLE device", 0, 0});
@@ -775,7 +782,7 @@ void RemoteTTSReaderActivity::wrapText(int maxWidth) {
     std::string token = state.text.substr(wordStart, idx - wordStart);
     std::string candidate = line.empty() ? token : line + " " + token;
 
-    if (!token.empty() && renderer.getTextWidth(UI_10_FONT_ID, candidate.c_str()) <= maxWidth) {
+    if (!token.empty() && renderer.getTextWidth(fontId, candidate.c_str()) <= maxWidth) {
       line = candidate;
     } else {
       if (!line.empty()) {
