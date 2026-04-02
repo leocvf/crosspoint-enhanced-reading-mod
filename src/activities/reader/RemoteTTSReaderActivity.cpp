@@ -25,6 +25,11 @@ void RemoteTTSReaderActivity::onEnter() {
   lastRenderMs = 0;
 
   resetStreamingSession("onEnter");
+  legacyMode.clear();
+  hasPendingLegacyPosition = false;
+  lastDocMismatchLogMs = 0;
+  lastTelemetryLogMs = 0;
+  lastLegacyPositionApplyMs = 0;
 
   const bool started = BluetoothManager::instance().start(X4_TTS_DEVICE_NAME,
                                                           [this](const std::string& payload) { handlePayload(payload); });
@@ -71,6 +76,17 @@ void RemoteTTSReaderActivity::loop() {
       requestUpdate();
     }
   }
+
+  if (!streamMode && legacyMode.tick(millis())) {
+    state.currentDocId = legacyMode.docId();
+    state.text = legacyMode.text();
+    state.highlightStart = 0;
+    state.highlightEnd = 0;
+    state.textDirty = true;
+    state.highlightDirty = true;
+  }
+  applyPendingLegacyPosition(millis());
+  logLegacyTelemetryThrottled(millis());
 
   if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
     onExitToHome();
@@ -242,26 +258,38 @@ void RemoteTTSReaderActivity::render(Activity::RenderLock&&) {
 }
 
 void RemoteTTSReaderActivity::handlePayload(const std::string& payload) {
-  LOG_DBG("RTTS", "Incoming payload: %s", payload.c_str());
+  if (payload.empty()) {
+    return;
+  }
 
-  if (payload.empty() || payload.size() > MAX_JSON_BYTES) {
-    stats.malformedPackets++;
-    LOG_ERR("RTTS", "Rejected payload size=%u max=%u", static_cast<unsigned int>(payload.size()),
-            static_cast<unsigned int>(MAX_JSON_BYTES));
-    setDebugMessage("Rejected payload", "JSON size guard triggered");
+  if (frameParser.push(payload) == RemoteTTSFrameParser::PushResult::OVERFLOW) {
+    legacyMode.mutableCounters().truncatedPayload++;
+    legacyMode.mutableCounters().droppedFrames++;
+    return;
+  }
+
+  std::string frame;
+  while (frameParser.popFrame(frame)) {
+    processJsonFrame(frame);
+  }
+}
+
+void RemoteTTSReaderActivity::processJsonFrame(const std::string& frame) {
+  if (frame.size() > MAX_JSON_BYTES) {
+    legacyMode.mutableCounters().truncatedPayload++;
+    legacyMode.mutableCounters().droppedFrames++;
     return;
   }
 
   JsonDocument doc;
-  auto err = deserializeJson(doc, payload);
+  auto err = deserializeJson(doc, frame);
   if (err) {
     stats.malformedPackets++;
-    LOG_ERR("RTTS", "JSON parse failed: %s", err.c_str());
-    setDebugMessage("JSON parse failed", err.c_str());
+    legacyMode.mutableCounters().parseErrors++;
+    legacyMode.mutableCounters().droppedFrames++;
     return;
   }
 
-  setDebugMessage("JSON received", payload.substr(0, 48));
   handleCommand(doc);
 }
 
@@ -285,6 +313,7 @@ void RemoteTTSReaderActivity::handleCommand(const JsonDocument& doc) {
 
   if (type == "clear") {
     clearLoadedContent();
+    legacyMode.clear();
     resetStreamingSession("clear");
     LOG_INF("RTTS", "Cleared document state");
     setDebugMessage("Command: clear");
@@ -300,15 +329,18 @@ void RemoteTTSReaderActivity::handleCommand(const JsonDocument& doc) {
     }
 
     streamMode = false;
-    state.currentDocId = doc["docId"].as<const char*>();
-    state.text = doc["text"].as<const char*>();
-    state.highlightStart = 0;
-    state.highlightEnd = 0;
-    state.textDirty = true;
-    state.highlightDirty = true;
-    renderPointerGlobal = 0;
-    LOG_INF("RTTS", "Loaded docId=%s chars=%d", state.currentDocId.c_str(), state.text.size());
-    setDebugMessage("Loaded text", ("docId=" + state.currentDocId).c_str());
+    legacyMode.onLoadText(doc["docId"].as<const char*>(), doc["text"].as<const char*>(), millis());
+    if (legacyMode.consumeDocReadyDirty()) {
+      state.currentDocId = legacyMode.docId();
+      state.text = legacyMode.text();
+      state.highlightStart = 0;
+      state.highlightEnd = 0;
+      state.textDirty = true;
+      state.highlightDirty = true;
+      renderPointerGlobal = 0;
+      LOG_INF("RTTS", "Loaded docId=%s chars=%d", state.currentDocId.c_str(), state.text.size());
+      setDebugMessage("Loaded text", ("docId=" + state.currentDocId).c_str());
+    }
     return;
   }
 
@@ -321,32 +353,34 @@ void RemoteTTSReaderActivity::handleCommand(const JsonDocument& doc) {
     }
 
     const std::string docId = doc["docId"].as<const char*>();
-    if (docId != state.currentDocId) {
-      LOG_INF("RTTS", "Ignored position for docId=%s current=%s", docId.c_str(), state.currentDocId.c_str());
-      setDebugMessage("Ignored position", "docId mismatch");
+    int start = doc["start"].as<int>();
+    int end = doc["end"].as<int>();
+
+    if (streamMode) {
+      if (start > end) {
+        std::swap(start, end);
+      }
+      mapHighlightToRenderWindow(start, end);
+      renderPointerGlobal = start;
+      if (autoFollowHighlight) {
+        viewportFirstLine = 0;
+      }
       return;
     }
 
-    int start = doc["start"].as<int>();
-    int end = doc["end"].as<int>();
-    if (start > end) {
-      std::swap(start, end);
+    const bool changed = legacyMode.onPosition(docId, start, end);
+    if (!changed) {
+      if (docId != state.currentDocId && (millis() - lastDocMismatchLogMs) >= 1000) {
+        lastDocMismatchLogMs = millis();
+        LOG_INF("RTTS", "Ignored position for docId=%s current=%s", docId.c_str(), state.currentDocId.c_str());
+      }
+      return;
     }
 
-    if (streamMode) {
-      mapHighlightToRenderWindow(start, end);
-    } else {
-      const int textLen = state.text.size();
-      state.highlightStart = std::clamp(start, 0, textLen);
-      state.highlightEnd = std::clamp(end, 0, textLen);
-      state.highlightDirty = true;
-    }
-
-    renderPointerGlobal = start;
-    if (autoFollowHighlight) {
-      viewportFirstLine = 0;
-    }
-    LOG_INF("RTTS", "Updated position %d-%d", start, end);
+    pendingLegacyStart = legacyMode.highlightStart();
+    pendingLegacyEnd = legacyMode.highlightEnd();
+    hasPendingLegacyPosition = true;
+    applyPendingLegacyPosition(millis(), true);
     return;
   }
 
@@ -377,6 +411,36 @@ void RemoteTTSReaderActivity::handleCommand(const JsonDocument& doc) {
 
   LOG_ERR("RTTS", "Rejected command: unknown type %s", type.c_str());
   setDebugMessage("Rejected command", ("Unknown type: " + type).c_str());
+}
+
+void RemoteTTSReaderActivity::applyPendingLegacyPosition(unsigned long nowMs, bool force) {
+  if (!hasPendingLegacyPosition) {
+    return;
+  }
+  if (!force && (nowMs - lastLegacyPositionApplyMs) < LEGACY_POSITION_RENDER_INTERVAL_MS) {
+    return;
+  }
+  lastLegacyPositionApplyMs = nowMs;
+  state.highlightStart = pendingLegacyStart;
+  state.highlightEnd = pendingLegacyEnd;
+  state.highlightDirty = true;
+  hasPendingLegacyPosition = false;
+  renderPointerGlobal = state.highlightStart;
+  if (autoFollowHighlight) {
+    viewportFirstLine = 0;
+  }
+}
+
+void RemoteTTSReaderActivity::logLegacyTelemetryThrottled(unsigned long nowMs) {
+  if (nowMs - lastTelemetryLogMs < 1000) {
+    return;
+  }
+  lastTelemetryLogMs = nowMs;
+  const auto snap = legacyMode.snapshot();
+  LOG_INF("RTTS", "legacy status activeDocId=%s docLen=%u readyState=%u lastPosition=%d-%d parseErr=%u drop=%u",
+          snap.activeDocId->c_str(), static_cast<unsigned int>(snap.docLen), static_cast<unsigned int>(snap.state),
+          snap.start, snap.end, static_cast<unsigned int>(snap.counters.parseErrors),
+          static_cast<unsigned int>(snap.counters.droppedFrames));
 }
 
 void RemoteTTSReaderActivity::handleStreamStart(const JsonDocument& doc) {
