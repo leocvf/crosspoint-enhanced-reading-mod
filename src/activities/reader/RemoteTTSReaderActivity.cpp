@@ -345,36 +345,18 @@ void RemoteTTSReaderActivity::handleCommand(const JsonDocument& doc) {
   }
 
   if (type == "position") {
-    int start = 0;
-    int end = 0;
-    const bool hasStart = RemoteTTSPacketFieldReaders::readIntAlias(doc, "start", "offset", start);
-    const bool hasEnd = RemoteTTSPacketFieldReaders::readIntAlias(doc, "end", "stop", end);
-    if (!hasStart && hasEnd) {
-      start = end;
-    }
-    if (hasStart && !hasEnd) {
-      end = start;
-    }
-    if (!hasStart && !hasEnd) {
+    if (!doc["docId"].is<const char*>() || !doc["start"].is<int>() || !doc["end"].is<int>()) {
       stats.malformedPackets++;
-      LOG_ERR("RTTS", "Rejected position: missing start/end");
-      setDebugMessage("Rejected position", "Missing start/end (or offset/stop)");
+      LOG_ERR("RTTS", "Rejected position: missing fields");
+      setDebugMessage("Rejected position", "Missing docId/start/end");
       return;
     }
 
-    std::string docId;
-    if (doc["docId"].is<const char*>()) {
-      docId = doc["docId"].as<const char*>();
-    }
+    const std::string docId = doc["docId"].as<const char*>();
+    int start = doc["start"].as<int>();
+    int end = doc["end"].as<int>();
 
     if (streamMode) {
-      if (docId.empty()) {
-        docId = streamDocId;
-      }
-      if (!docId.empty() && !streamDocId.empty() && docId != streamDocId) {
-        LOG_INF("RTTS", "Ignored position for stream docId=%s current=%s", docId.c_str(), streamDocId.c_str());
-        return;
-      }
       if (start > end) {
         std::swap(start, end);
       }
@@ -383,13 +365,6 @@ void RemoteTTSReaderActivity::handleCommand(const JsonDocument& doc) {
       if (autoFollowHighlight) {
         viewportFirstLine = 0;
       }
-      return;
-    }
-
-    if (docId.empty()) {
-      stats.malformedPackets++;
-      LOG_ERR("RTTS", "Rejected position: missing docId in legacy mode");
-      setDebugMessage("Rejected position", "Missing docId");
       return;
     }
 
