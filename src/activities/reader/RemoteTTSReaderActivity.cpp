@@ -6,6 +6,7 @@
 #include <algorithm>
 
 #include "RemoteTTSConstants.h"
+#include "RemoteTTSPacketFieldReaders.h"
 #include "fontIds.h"
 #include <BluetoothManager.h>
 
@@ -387,7 +388,7 @@ void RemoteTTSReaderActivity::handleStreamStart(const JsonDocument& doc) {
   streamSessionId = doc["sessionId"].as<const char*>();
   streamDocId = doc["docId"].as<const char*>();
   state.currentDocId = streamDocId;
-  streamStartSeq = doc["startSeq"].is<uint32_t>() ? doc["startSeq"].as<uint32_t>() : 1;
+  streamStartSeq = doc["startSeq"].is<uint32_t>() ? doc["startSeq"].as<uint32_t>() : 0;
   highestContiguousSeq = streamStartSeq > 0 ? (streamStartSeq - 1) : 0;
   lastCommitSeq = highestContiguousSeq;
   committedBaseOffset = 0;
@@ -400,9 +401,7 @@ void RemoteTTSReaderActivity::handleStreamStart(const JsonDocument& doc) {
   state.text.clear();
   state.textDirty = true;
   state.highlightDirty = true;
-  if (doc["startOffset"].is<int>()) {
-    renderPointerGlobal = std::max(0, doc["startOffset"].as<int>());
-  }
+  renderPointerGlobal = std::max(0, doc["startOffset"].is<int>() ? doc["startOffset"].as<int>() : 0);
   LOG_INF("RTTS", "stream_start session=%s docId=%s startSeq=%u ver=%d totalChars=%d", streamSessionId.c_str(),
           streamDocId.c_str(), static_cast<unsigned int>(streamStartSeq),
           doc["streamVersion"].is<int>() ? doc["streamVersion"].as<int>() : 1,
@@ -411,10 +410,21 @@ void RemoteTTSReaderActivity::handleStreamStart(const JsonDocument& doc) {
 }
 
 void RemoteTTSReaderActivity::handleStreamChunk(const JsonDocument& doc) {
-  if (!doc["sessionId"].is<const char*>() || !doc["seq"].is<uint32_t>() || !doc["offset"].is<int>() ||
-      !doc["text"].is<const char*>()) {
+  uint32_t seq = 0;
+  int offset = 0;
+  const bool hasSeq = RemoteTTSPacketFieldReaders::readUIntAlias(doc, "seq", "sequenceId", seq);
+  const bool hasOffset = RemoteTTSPacketFieldReaders::readIntAlias(doc, "offset", "start", offset);
+  if (!doc["sessionId"].is<const char*>() || !hasSeq || !hasOffset || !doc["text"].is<const char*>()) {
     stats.malformedPackets++;
-    setDebugMessage("Rejected stream_chunk", "Missing required fields");
+    if (!hasSeq && !hasOffset) {
+      setDebugMessage("Rejected stream_chunk", "Missing (seq|sequenceId) and (offset|start)");
+    } else if (!hasSeq) {
+      setDebugMessage("Rejected stream_chunk", "Missing seq/sequenceId");
+    } else if (!hasOffset) {
+      setDebugMessage("Rejected stream_chunk", "Missing offset/start");
+    } else {
+      setDebugMessage("Rejected stream_chunk", "Missing sessionId/text");
+    }
     return;
   }
 
@@ -424,7 +434,6 @@ void RemoteTTSReaderActivity::handleStreamChunk(const JsonDocument& doc) {
     return;
   }
 
-  const uint32_t seq = doc["seq"].as<uint32_t>();
   if (seenChunkSeq.find(seq) != seenChunkSeq.end() || pendingChunks.find(seq) != pendingChunks.end()) {
     stats.duplicateChunks++;
     emitAckLogHook("duplicate chunk");
@@ -433,7 +442,7 @@ void RemoteTTSReaderActivity::handleStreamChunk(const JsonDocument& doc) {
 
   StreamChunk chunk;
   chunk.seq = seq;
-  chunk.offset = doc["offset"].as<int>();
+  chunk.offset = offset;
   chunk.text = doc["text"].as<const char*>();
   chunk.receivedAtMs = millis();
   if (doc["reason"].is<const char*>()) {
@@ -455,9 +464,12 @@ void RemoteTTSReaderActivity::handleStreamChunk(const JsonDocument& doc) {
 }
 
 void RemoteTTSReaderActivity::handleStreamCommit(const JsonDocument& doc) {
-  if (!doc["sessionId"].is<const char*>() || !doc["uptoSeq"].is<uint32_t>()) {
+  uint32_t uptoSeq = 0;
+  if (!doc["sessionId"].is<const char*>() ||
+      !RemoteTTSPacketFieldReaders::readUIntAlias(doc, "uptoSeq", "committedSeq", uptoSeq)) {
     stats.malformedPackets++;
-    setDebugMessage("Rejected stream_commit", "Missing sessionId/uptoSeq");
+    setDebugMessage("Rejected stream_commit",
+                    doc["sessionId"].is<const char*>() ? "Missing uptoSeq/committedSeq" : "Missing sessionId");
     return;
   }
 
@@ -467,7 +479,6 @@ void RemoteTTSReaderActivity::handleStreamCommit(const JsonDocument& doc) {
     return;
   }
 
-  const uint32_t uptoSeq = doc["uptoSeq"].as<uint32_t>();
   if (streamCommitStartedAtMs == 0) {
     streamCommitStartedAtMs = millis();
   }
@@ -498,9 +509,12 @@ void RemoteTTSReaderActivity::handleStreamCommit(const JsonDocument& doc) {
 }
 
 void RemoteTTSReaderActivity::handleStreamSeek(const JsonDocument& doc) {
-  if (!doc["sessionId"].is<const char*>() || !doc["offset"].is<int>()) {
+  int offset = 0;
+  const bool hasOffset = RemoteTTSPacketFieldReaders::readIntAlias(doc, "offset", "start", offset);
+  if (!doc["sessionId"].is<const char*>() || !hasOffset) {
     stats.malformedPackets++;
-    setDebugMessage("Rejected stream_seek", "Missing sessionId/offset");
+    setDebugMessage("Rejected stream_seek",
+                    doc["sessionId"].is<const char*>() ? "Missing offset/start" : "Missing sessionId");
     return;
   }
 
@@ -510,7 +524,7 @@ void RemoteTTSReaderActivity::handleStreamSeek(const JsonDocument& doc) {
     return;
   }
 
-  renderPointerGlobal = std::max(0, doc["offset"].as<int>());
+  renderPointerGlobal = std::max(0, offset);
   if (doc["resetSeq"].is<uint32_t>()) {
     const uint32_t resetSeq = doc["resetSeq"].as<uint32_t>();
     highestContiguousSeq = resetSeq > 0 ? (resetSeq - 1) : 0;

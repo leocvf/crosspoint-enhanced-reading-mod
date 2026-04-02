@@ -25,20 +25,26 @@
 ```json
 {"type":"stream_start","sessionId":"s-1001","docId":"book-42","startOffset":0}
 ```
-Optional metadata accepted on `stream_start`: `streamVersion`, `totalChars`, `startSeq`.
+`startOffset` is optional; when omitted, the reader defaults to `0`.
+Optional metadata accepted on `stream_start`: `streamVersion`, `totalChars`, `startSeq` (defaults to `0` if omitted).
 - `stream_chunk` (can arrive out-of-order)
 ```json
 {"type":"stream_chunk","sessionId":"s-1001","seq":11,"offset":2048,"text":"sentence-aligned chunk"}
 ```
+Required key sets on `stream_chunk`:
+  - sequence identifier: canonical `seq` (preferred) or alias `sequenceId`
+  - chunk start offset: canonical `offset` (preferred) or alias `start`
 Optional metadata accepted on `stream_chunk`: `checksum`, `chunkBytes`.
 - `stream_commit` (only committed contiguous chunks become renderable)
 ```json
 {"type":"stream_commit","sessionId":"s-1001","uptoSeq":11}
 ```
+Required sequence fence: canonical `uptoSeq` (preferred) or alias `committedSeq`.
 - `stream_seek` (move render pointer/highlight focus)
 ```json
 {"type":"stream_seek","sessionId":"s-1001","offset":2210}
 ```
+Seek offset accepts canonical `offset` (preferred) or alias `start` (if both are present, `offset` wins).
 Optional field: `resetSeq` to force receiver resync to a new sequence baseline.
 - `stream_end`
 ```json
@@ -48,6 +54,7 @@ Optional field: `resetSeq` to force receiver resync to a new sequence baseline.
 ## Behavior guarantees
 - Strict command validation: malformed packets are rejected and logged.
 - Required-field validation is strict, but unknown/extra fields are ignored for forward compatibility (for example, `reason` on `stream_chunk`).
+- Interop aliases are accepted for Android senders, but canonical field names remain preferred for new integrations.
 - JSON size guard: packets larger than firmware max are rejected.
 - Backward compatibility: `load_text` + `position` behavior remains available.
 - Streaming mode isolates receive pointer from render pointer.
