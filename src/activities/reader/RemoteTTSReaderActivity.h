@@ -107,7 +107,8 @@ class RemoteTTSReaderActivity : public Activity {
   static constexpr size_t MAX_PENDING_CHUNKS = 96;
   static constexpr size_t MAX_STREAM_BYTES = 24 * 1024;
   static constexpr size_t MAX_COMMITTED_BYTES = 16 * 1024;
-  static constexpr unsigned long RENDER_COALESCE_MS = 120;
+  /** Slightly faster than full refresh cadence; still eases e-ink flash on rapid highlight updates. */
+  static constexpr unsigned long RENDER_COALESCE_MS = 100;
 
   void handlePayload(const std::string& payload);
   void processJsonFrame(const std::string& frame);
