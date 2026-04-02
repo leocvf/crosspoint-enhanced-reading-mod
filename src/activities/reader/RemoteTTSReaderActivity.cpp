@@ -52,6 +52,7 @@ void RemoteTTSReaderActivity::onExit() {
   BluetoothManager::instance().stop();
   if (renderer.hasBwBufferStored()) {
     renderer.restoreBwBuffer(); 
+    renderer.displayBuffer(HalDisplay::HALF_REFRESH); // Clean exit blink
   }
   Activity::onExit();
 }
@@ -326,8 +327,6 @@ void RemoteTTSReaderActivity::handleStreamCommit(const JsonDocument& doc) {
   if (changed) {
     state.text = committedText;
     state.renderWindowEnd = committedBaseOffset + committedText.size();
-    // Only set textDirty (forcing a blink) if the viewport actually needs to move
-    // For now, keep it simple to verify the no-blink path.
     state.highlightDirty = true; 
   }
 }
