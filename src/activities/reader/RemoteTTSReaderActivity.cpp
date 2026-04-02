@@ -458,6 +458,13 @@ void RemoteTTSReaderActivity::handleStreamChunk(const JsonDocument& doc) {
     return;
   }
 
+  const char* chunkText = doc["text"].as<const char*>();
+  if (!chunkText) {
+    stats.malformedPackets++;
+    setDebugMessage("Rejected stream_chunk", "Null text");
+    return;
+  }
+
   const std::string session = doc["sessionId"].as<const char*>();
   if (!streamMode || session != streamSessionId) {
     LOG_INF("RTTS", "Ignored stream_chunk for inactive session=%s", session.c_str());
@@ -473,7 +480,7 @@ void RemoteTTSReaderActivity::handleStreamChunk(const JsonDocument& doc) {
   StreamChunk chunk;
   chunk.seq = seq;
   chunk.offset = offset;
-  chunk.text = doc["text"].as<const char*>();
+  chunk.text = chunkText;
   chunk.receivedAtMs = millis();
   if (doc["reason"].is<const char*>()) {
     LOG_DBG("RTTS", "Chunk seq=%u reason=%s", static_cast<unsigned int>(seq), doc["reason"].as<const char*>());
