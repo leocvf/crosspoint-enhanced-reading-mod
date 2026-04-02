@@ -215,17 +215,16 @@ void RemoteTTSReaderActivity::render(Activity::RenderLock&&) {
   const unsigned long now = millis();
   const bool onlyHighlightDirty = state.highlightDirty && !state.textDirty;
   
-  HalDisplay::RefreshMode refreshMode = HalDisplay::FAST_REFRESH;
-  if (!onlyHighlightDirty || consecutiveFastRefreshes >= 50) {
-    refreshMode = HalDisplay::HALF_REFRESH;
-    consecutiveFastRefreshes = 0;
-  } else {
+  if (onlyHighlightDirty && consecutiveFastRefreshes < 50) {
+    renderer.displayHighlightBuffer();
     consecutiveFastRefreshes++;
+  } else {
+    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+    consecutiveFastRefreshes = 0;
   }
 
-  renderer.displayBuffer(refreshMode);
   lastRenderMs = now;
-  lastRenderWasFullRefresh = (refreshMode != HalDisplay::FAST_REFRESH);
+  lastRenderWasFullRefresh = (consecutiveFastRefreshes == 0);
 
   state.textDirty = false;
   state.highlightDirty = false;

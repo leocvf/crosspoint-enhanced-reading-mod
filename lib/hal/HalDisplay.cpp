@@ -38,9 +38,8 @@ void HalDisplay::displayBuffer(HalDisplay::RefreshMode mode, bool turnOffScreen)
 }
 
 void HalDisplay::displayHighlightBuffer(bool turnOffScreen) {
-  // Compatibility fallback: some SDK revisions do not expose a dedicated
-  // highlight-buffer flush method. Use a half refresh to keep behavior close.
-  einkDisplay.displayBuffer(EInkDisplay::HALF_REFRESH, turnOffScreen);
+  // Use FAST_REFRESH for highlight updates to avoid full-screen blinking.
+  einkDisplay.displayBuffer(EInkDisplay::FAST_REFRESH, turnOffScreen);
 }
 
 void HalDisplay::refreshDisplay(HalDisplay::RefreshMode mode, bool turnOffScreen) {
