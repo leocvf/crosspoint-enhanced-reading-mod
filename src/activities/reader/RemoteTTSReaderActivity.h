@@ -95,7 +95,7 @@ class RemoteTTSReaderActivity : public Activity {
   int renderPointerGlobal = 0;
 
   static constexpr size_t MAX_JSON_BYTES = 1024;
-  static constexpr size_t MAX_FRAME_BUFFER_BYTES = 8192;
+  static constexpr size_t MAX_FRAME_BUFFER_BYTES = 4096;
   static constexpr unsigned long LEGACY_POSITION_RENDER_INTERVAL_MS = 33;
   static constexpr uint32_t FORCE_HALF_REFRESH_EVERY = 30;
 
